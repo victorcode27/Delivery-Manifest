@@ -23,13 +23,17 @@ import file_watcher
 import database
 
 # Configuration
-MANIFEST_FOLDER = r"C:\Users\Assault\OneDrive\Documents\Delivery Route\Manifests_Output"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MANIFEST_FOLDER = os.getenv("MANIFEST_FOLDER", os.path.join(BASE_DIR, "Manifests_Output"))
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.log")
 
 # --- DEV MODE CONFIG ---
-DEV_MODE = True
+DEV_MODE = os.getenv("DEV_MODE", "true").lower() == "true"
 SERVER_START_TIME = datetime.now().isoformat()
+
+# --- CORS CONFIG ---
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
+CORS_ORIGINS = [o.strip() for o in _raw_origins.split(",")]
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -53,8 +57,11 @@ watcher_thread = None
 
 @app.on_event("startup")
 async def startup_event():
-    """Start the file watcher service in a background thread."""
+    """Start the file watcher service in a background thread (local/LAN only)."""
     global watcher_service, watcher_thread
+    if os.getenv("ENABLE_FILE_WATCHER", "false").lower() != "true":
+        logger.info("File Watcher disabled (ENABLE_FILE_WATCHER != true). Skipping.")
+        return
     try:
         logger.info("Initializing File Watcher Service...")
         watcher_service = file_watcher.FileWatcher(
@@ -77,10 +84,10 @@ async def shutdown_event():
         watcher_service.running = False
 
 
-# Enable CORS (still useful for development)
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -896,29 +903,8 @@ LAN_MODE = True  # Set to False for localhost-only access
 PRODUCTION_MODE = False  # Safety check to prevent accidental public exposure
 
 if __name__ == "__main__":
-    # CRITICAL: Always bind to 0.0.0.0 to allow BOTH localhost AND LAN access
-    # 0.0.0.0 means "listen on all network interfaces"
-    # This allows: localhost, 127.0.0.1, and LAN IP (e.g., 192.168.0.29)
     host = "0.0.0.0"
-    port = 8000
-    
-    print("=" * 60)
-    print("[!] WARNING: For LAN use, run with uvicorn directly:")
-    print("   uvicorn api_server:app --host 0.0.0.0 --port 8000 --workers 4")
-    print("")
-    print("Server will be accessible via:")
-    print(f"  [+] localhost:{port}")
-    print(f"  [+] 127.0.0.1:{port}")
-    print(f"  [+] <YOUR_LAN_IP>:{port}")
-    print("")
-    print("To find LAN IP: ipconfig (look for IPv4 Address)")
-    print("=" * 60)
-    
+    port = int(os.getenv("PORT", 8000))
+
     logger.info(f"Starting Invoice API server on {host}:{port}")
-    logger.info(f"Bound interfaces: ALL (0.0.0.0)")
-    logger.info(f"CORS: Enabled for all origins")
-    
-    print(f"\n[OK] Server starting on http://{host}:{port}")
-    print("Press Ctrl+C to stop\n")
-    
     uvicorn.run(app, host=host, port=port)

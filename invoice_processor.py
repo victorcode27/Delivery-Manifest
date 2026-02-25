@@ -20,12 +20,11 @@ except ImportError:
 
 # Import database module
 import database
-from database import get_session
+from database import get_db_session
 from sqlalchemy import text
 
 # --- CONFIGURATION ---
-# INPUT_FOLDER = r"C:\Users\Assault\OneDrive\Documents\Delivery Route\Invoices_Input"  # Local folder
-INPUT_FOLDER = r"\\BRD-DESKTOP-ELV\storage"  # Network path (Verified by User)
+INPUT_FOLDER = os.getenv("INVOICE_INPUT_FOLDER", r"\\BRD-DESKTOP-ELV\storage")
 
 # Output folders for file organization
 BASE_FOLDER = os.path.dirname(os.path.abspath(__file__))
@@ -296,28 +295,34 @@ def main():
         return
     
     # --- AUTO-CLEANUP: Remove records with verified BAD data so they can be re-scanned ---
+    db = get_db_session()
     try:
-        with get_session() as db:
-            bad_values = ["USD", "ZIG", "ZWG", "LOIUSE", "LOUISE"]
-            
-            # Build named parameters for dynamic IN clause
-            params = {f'bad_{i}': val for i, val in enumerate(bad_values)}
-            placeholders = ','.join([f':bad_{i}' for i in range(len(bad_values))])
-            
-            # Delete orders where order_number is in the bad list
-            result = db.execute(text(f"DELETE FROM orders WHERE order_number IN ({placeholders})"), params)
-            deleted_count = result.rowcount
-            if deleted_count > 0:
-                logger.info(f"Cleaned up {deleted_count} records with bad Order Numbers (USD/Names). They will be re-scanned.")
-            db.commit()
+        bad_values = ["USD", "ZIG", "ZWG", "LOIUSE", "LOUISE"]
+
+        # Build named parameters for dynamic IN clause
+        params = {f'bad_{i}': val for i, val in enumerate(bad_values)}
+        placeholders = ','.join([f':bad_{i}' for i in range(len(bad_values))])
+
+        # Delete orders where order_number is in the bad list
+        result = db.execute(text(f"DELETE FROM orders WHERE order_number IN ({placeholders})"), params)
+        deleted_count = result.rowcount
+        if deleted_count > 0:
+            logger.info(f"Cleaned up {deleted_count} records with bad Order Numbers (USD/Names). They will be re-scanned.")
+        db.commit()
     except Exception as e:
+        db.rollback()
         logger.error(f"Error during auto-cleanup: {e}")
+    finally:
+        db.close()
     
     # Get already processed filenames from database (including Credit Notes)
     # We fetch ALL orders to avoid re-processing anything
-    with get_session() as db:
+    db = get_db_session()
+    try:
         rows = db.execute(text("SELECT filename FROM orders")).mappings().all()
         processed_filenames = {row['filename'] for row in rows}
+    finally:
+        db.close()
     
     pdf_files = glob.glob(os.path.join(INPUT_FOLDER, "*.pdf"))
     

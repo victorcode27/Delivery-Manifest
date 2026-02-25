@@ -9,3 +9,12 @@ backups/
 venv/
 env/
 .DS_Store
+
+# Local-only dev/debug/test scripts
+debug_*.py
+debug_*.js
+test_*.py
+backfill_*.py
+migrate_helper.py
+get_lan_ip.py
+diagnose_staging_bug.py

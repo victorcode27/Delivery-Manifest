@@ -10,12 +10,12 @@ let currentReportView = 'dispatched'; // 'dispatched' or 'outstanding'
 
 
 // API Configuration
-// Dynamic API URL - automatically uses the hostname from browser address bar
-// Works for: localhost, LAN IP (192.168.x.x), or custom hostname (manifest.local)
-const API_URL = `http://${window.location.hostname}:8000`;
+// Use relative paths so fetch() calls work on any host/port (local or Render production).
+// "\'"' means all requests go to the same origin serving this page.
+const API_URL = '';
 
-// Safety check: Log resolved API URL on startup
-console.log(`[API Config] Resolved API_URL: ${API_URL}`);
+// Safety check: Log resolved origin on startup
+console.log(`[API Config] Using relative API paths. Page origin: ${window.location.origin}`);
 
 // Error Logger for UI
 function logError(msg) {
@@ -90,46 +90,62 @@ let settingsData = {
 
 // Load settings from API
 async function loadSettings() {
-    try {
-        const [driversRes, assistantsRes, checkersRes, routesRes, trucksRes, custRoutesRes] = await Promise.all([
-            fetch(`${API_URL}/settings/drivers`).catch(e => { throw new Error("Drivers API Failed") }),
-            fetch(`${API_URL}/settings/assistants`).catch(e => { throw new Error("Assistants API Failed") }),
-            fetch(`${API_URL}/settings/checkers`).catch(e => { throw new Error("Checkers API Failed") }),
-            fetch(`${API_URL}/settings/routes`).catch(e => { throw new Error("Routes API Failed") }),
-            fetch(`${API_URL}/trucks`).catch(e => { throw new Error("Trucks API Failed") }),
-            fetch(`${API_URL}/customer-routes`).catch(e => { throw new Error("Customer Routes API Failed") })
+    // Fetches one endpoint and returns parsed JSON, or null on any failure.
+    // Never throws — all errors are logged to console only.
+    async function safeFetch(url, label) {
+        try {
+            const res = await fetch(url);
+            if (!res.ok) {
+                console.error(`[Settings] ${label} returned HTTP ${res.status} ${res.statusText}`);
+                return null;
+            }
+            return await res.json();
+        } catch (err) {
+            console.error(`[Settings] ${label} request failed: ${err.message}`);
+            return null;
+        }
+    }
+
+    const [driversData, assistantsData, checkersData, routesData, trucksData, custRoutesData] =
+        await Promise.all([
+            safeFetch(`${API_URL}/settings/drivers`,    'Drivers'),
+            safeFetch(`${API_URL}/settings/assistants`, 'Assistants'),
+            safeFetch(`${API_URL}/settings/checkers`,   'Checkers'),
+            safeFetch(`${API_URL}/settings/routes`,     'Routes'),
+            safeFetch(`${API_URL}/trucks`,              'Trucks'),
+            safeFetch(`${API_URL}/customer-routes`,     'Customer Routes'),
         ]);
 
-        const driversData = await driversRes.json();
-        const assistantsData = await assistantsRes.json();
-        const checkersData = await checkersRes.json();
-        const routesData = await routesRes.json();
-        const trucksData = await trucksRes.json();
-        const custRoutesData = await custRoutesRes.json();
+    // Safely apply data — null-safe, falls back to empty collections
+    settingsData.drivers        = driversData?.values    ?? [];
+    settingsData.assistants     = assistantsData?.values ?? [];
+    settingsData.checkers       = checkersData?.values   ?? [];
+    settingsData.routes         = routesData?.values     ?? [];
+    settingsData.trucks         = trucksData?.trucks     ?? [];
+    settingsData.customerRoutes = custRoutesData?.routes ?? {};
 
-        settingsData.drivers = driversData.values || [];
-        settingsData.assistants = assistantsData.values || [];
-        settingsData.checkers = checkersData.values || [];
-        settingsData.routes = routesData.values || [];
-        settingsData.trucks = trucksData.trucks || [];
-        settingsData.customerRoutes = custRoutesData.routes || {};
+    // Only alert the user if every single endpoint failed (server unreachable)
+    const allFailed = [driversData, assistantsData, checkersData, routesData, trucksData, custRoutesData]
+        .every(d => d === null);
 
-        console.log("Settings loaded from Server");
+    if (allFailed) {
+        console.error('[Settings] All endpoints unreachable — backend may not be running.');
+        logError('Connection Failed: Backend unreachable. Ensure the server is running on port 8000.');
+    } else {
+        console.log('[Settings] Settings loaded from server.');
+    }
 
-        // Force refresh of UI lists if function exists (script might load order dependent)
-        if (typeof renderSettingsList === 'function') {
-            try {
-                renderSettingsList('drivers');
-                renderSettingsList('assistants');
-                renderSettingsList('checkers');
-                renderSettingsList('routes');
-                renderTrucksList();
-            } catch (e) { console.warn("UI refresh failed", e); }
+    // Refresh UI list renders if the settings panel is available
+    if (typeof renderSettingsList === 'function') {
+        try {
+            renderSettingsList('drivers');
+            renderSettingsList('assistants');
+            renderSettingsList('checkers');
+            renderSettingsList('routes');
+            renderTrucksList();
+        } catch (e) {
+            console.warn('[Settings] UI refresh failed:', e);
         }
-
-    } catch (error) {
-        console.error("Error loading settings from server:", error);
-        logError("Connection Failed! Is server running? " + error.message);
     }
 }
 
@@ -3021,52 +3037,93 @@ function openLoginModal(intent) {
 }
 
 async function handleLogin() {
-    const username = document.getElementById('login-username').value.trim();
-    const password = document.getElementById('login-password').value;
+    const usernameEl = document.getElementById('login-username');
+    const passwordEl = document.getElementById('login-password');
     const loginBtn = document.getElementById('login-submit-btn');
+    const loginError = document.getElementById('login-error');
+    const accessError = document.getElementById('access-error');
 
-    // Show loading state
+    const username = usernameEl.value.trim();
+    const password = passwordEl.value;
+
+    // Validate inputs before sending
+    if (!username || !password) {
+        loginError.textContent = 'Please enter both username and password.';
+        loginError.classList.remove('hidden');
+        accessError.classList.add('hidden');
+        return;
+    }
+
+    // Reset error messages
+    loginError.classList.add('hidden');
+    accessError.classList.add('hidden');
+
+    // Show loading state on button
     loginBtn.disabled = true;
     loginBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Logging in...';
     lucide.createIcons();
 
+    console.log(`[Login] Attempting login for user: "${username}"`);
+
     try {
-        const response = await fetch(`${API_URL}/auth/login`, {
+        const response = await fetch('/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password })
         });
 
+        console.log(`[Login] Server responded with status: ${response.status}`);
+
+        if (response.status === 401) {
+            // Invalid credentials
+            console.warn('[Login] Invalid credentials.');
+            loginError.textContent = 'Incorrect username or password.';
+            loginError.classList.remove('hidden');
+            passwordEl.value = '';
+            passwordEl.focus();
+            return;
+        }
+
         if (!response.ok) {
-            document.getElementById('login-error').classList.remove('hidden');
-            document.getElementById('access-error').classList.add('hidden');
+            // Other server errors (500, 503 etc.)
+            const detail = await response.text();
+            console.error(`[Login] Server error ${response.status}:`, detail);
+            loginError.textContent = `Server error (${response.status}). Please try again later.`;
+            loginError.classList.remove('hidden');
             return;
         }
 
         const data = await response.json();
+        console.log('[Login] Login successful. User data received:', data.user);
+
         const user = {
             username: data.user.username,
             isAdmin: data.user.isAdmin,
             canManifest: data.user.canManifest
         };
 
-        // Check Permissions based on Intent
+        // Check permissions based on what the user intends to do
         if (loginIntent === 'manifest') {
             if (user.canManifest || user.isAdmin) {
+                console.log('[Login] Manifest access granted.');
                 finalizeLogin(user);
             } else {
-                document.getElementById('access-error').textContent = "You do not have permission to access the Manifest system.";
-                document.getElementById('access-error').classList.remove('hidden');
-                document.getElementById('login-error').classList.add('hidden');
+                console.warn('[Login] User lacks manifest permission.');
+                accessError.textContent = 'You do not have permission to access the Manifest system.';
+                accessError.classList.remove('hidden');
+                loginError.classList.add('hidden');
             }
         } else {
-            // Report intent - All users can view reports
+            // Report intent - all authenticated users can view reports
+            console.log('[Login] Report access granted.');
             finalizeLogin(user);
         }
+
     } catch (error) {
-        console.error('Login error:', error);
-        document.getElementById('login-error').textContent = 'Server connection failed. Please ensure the API is running.';
-        document.getElementById('login-error').classList.remove('hidden');
+        // Network-level failure (no connection, DNS failure, CORS etc.)
+        console.error('[Login] Network error during login:', error);
+        loginError.textContent = 'Could not connect to the server. Check your network connection.';
+        loginError.classList.remove('hidden');
     } finally {
         loginBtn.disabled = false;
         loginBtn.textContent = 'Login';

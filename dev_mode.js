@@ -42,7 +42,7 @@ class DevModeSystem {
 
     async fetchHealth() {
         try {
-            const res = await fetch(`http://${window.location.hostname}:8000/health`);
+            const res = await fetch(`/health`);
             if (res.ok) {
                 return await res.json();
             }

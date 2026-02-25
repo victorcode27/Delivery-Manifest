@@ -16,7 +16,7 @@ import invoice_processor
 try:
     from invoice_processor import INPUT_FOLDER as WATCH_FOLDER
 except ImportError:
-    WATCH_FOLDER = r"\\BRD-DESKTOP-ELV\storage"  # Fallback
+    WATCH_FOLDER = os.getenv("INVOICE_INPUT_FOLDER", r"\\BRD-DESKTOP-ELV\storage")  # Fallback
 
 POLL_INTERVAL = 20  # seconds - Optimized for responsiveness
 FILE_STABILITY_CHECKS = 3  # Number of consecutive checks to verify file is stable

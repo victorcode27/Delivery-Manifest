@@ -4,11 +4,12 @@
  */
 
 // API Configuration
-const API_BASE_URL = `http://${window.location.hostname}:8000`;
+// Relative path — works on any host/port (local, LAN, or Render production).
+const API_BASE_URL = '';
 const API_ENDPOINT = `${API_BASE_URL}/reports/dispatched`;
 
 // Safety check: Log resolved API URL on startup
-console.log(`[Dispatch Report] Resolved API_BASE_URL: ${API_BASE_URL}`);
+console.log(`[Dispatch Report] Using relative API paths. Page origin: ${window.location.origin}`);
 
 // State Management
 let currentState = {

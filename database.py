@@ -1,42 +1,88 @@
 """
 Database module for the Delivery Manifest System.
-Uses SQLite for persistent, corruption-resistant storage.
+Uses PostgreSQL via SQLAlchemy (SessionLocal from db_config).
 """
 
-import sqlite3
 import os
 import json
 from datetime import datetime
 from typing import List, Dict, Optional
 import hashlib
 from db_config import SessionLocal
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, OperationalError
 
-# Database file path (same directory as this script)
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "delivery.db")
+
 
 def get_session():
+    """FastAPI dependency injection session (generator). Use with Depends()."""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
-def get_connection():
-    """Get a database connection with row factory for dict-like access."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+
+def get_db_session():
+    """
+    Manual session for use outside FastAPI (scripts, background tasks).
+
+    Usage:
+        db = get_db_session()
+        try:
+            ...
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+    """
+    return SessionLocal()
+
+
+def execute_sqlite_wrapper(db, query, params=None):
+    """
+    Helper to convert SQLite `?` to SQLAlchemy `:p0` named parameters.
+    """
+    if "REPLACE INTO" in query.upper():
+        query = query.replace("REPLACE INTO", "INSERT INTO")
+        if "customer_routes" in query:
+             query += " ON CONFLICT (customer_name) DO UPDATE SET route_name = EXCLUDED.route_name"
+
+    if params:
+        if '?' in query:
+            parts = query.split('?')
+            new_query = parts[0]
+            named_params = {}
+            for idx, val in enumerate(params):
+                param_name = f"p{idx}"
+                new_query += f":{param_name}" + parts[idx+1]
+                named_params[param_name] = val
+            query = new_query
+            params = named_params
+        elif isinstance(params, (tuple, list)):
+             pass
+    else:
+        params = {}
+        
+    query_upper = query.strip().upper()
+    if query_upper.startswith("INSERT ") and "RETURNING" not in query_upper:
+        query = query.rstrip(";\t\n\r ") + " RETURNING id"
+        
+    result = db.execute(text(query), params)
+    return result
+
 
 def init_db():
     """Initialize the database with required tables."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     # Orders table - stores invoice/order data
     # Added type, reference_number, original_value, status for Credit Note support
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             filename TEXT UNIQUE NOT NULL,
             date_processed TEXT NOT NULL,
             customer_name TEXT NOT NULL,
@@ -59,11 +105,11 @@ def init_db():
     
     # Check if we need to migrate existing table (add new columns if missing)
     try:
-        cursor.execute("SELECT customer_number FROM orders LIMIT 1")
-    except sqlite3.OperationalError:
+        result = execute_sqlite_wrapper(db, "SELECT customer_number FROM orders LIMIT 1")
+    except OperationalError:
         print("Migrating database: Adding customer_number column...")
         try:
-            cursor.execute("ALTER TABLE orders ADD COLUMN customer_number TEXT DEFAULT 'N/A'")
+            result = execute_sqlite_wrapper(db, "ALTER TABLE orders ADD COLUMN customer_number TEXT DEFAULT 'N/A'")
         except Exception as e:
             print(f"Migration warning: {e}")
 
@@ -72,9 +118,9 @@ def init_db():
     # Reports table... (rest remains same)
 
     # Report items table - links invoices to reports
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         CREATE TABLE IF NOT EXISTS report_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             report_id INTEGER NOT NULL,
             invoice_number TEXT NOT NULL,
             order_number TEXT,
@@ -91,18 +137,18 @@ def init_db():
     
     # Add migration for report_items too
     try:
-        cursor.execute("SELECT customer_number FROM report_items LIMIT 1")
-    except sqlite3.OperationalError:
+        result = execute_sqlite_wrapper(db, "SELECT customer_number FROM report_items LIMIT 1")
+    except OperationalError:
         print("Migrating database: Adding customer_number to report_items...")
         try:
-            cursor.execute("ALTER TABLE report_items ADD COLUMN customer_number TEXT DEFAULT 'N/A'")
+            result = execute_sqlite_wrapper(db, "ALTER TABLE report_items ADD COLUMN customer_number TEXT DEFAULT 'N/A'")
         except Exception as e:
             print(f"Migration warning (report_items): {e}")
     
     # Settings table - stores app settings (routes, drivers, etc.)
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         CREATE TABLE IF NOT EXISTS settings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             category TEXT NOT NULL,
             value TEXT NOT NULL,
             UNIQUE(category, value)
@@ -110,9 +156,9 @@ def init_db():
     ''')
     
     # Trucks table
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         CREATE TABLE IF NOT EXISTS trucks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             reg TEXT UNIQUE NOT NULL,
             driver TEXT,
             assistant TEXT,
@@ -121,18 +167,18 @@ def init_db():
     ''')
 
     # Customer Routes table
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         CREATE TABLE IF NOT EXISTS customer_routes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             customer_name TEXT UNIQUE NOT NULL,
             route_name TEXT NOT NULL
         )
     ''')
 
     # Manifest Events table (Audit Trail)
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         CREATE TABLE IF NOT EXISTS manifest_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             manifest_number TEXT NOT NULL,
             event_type TEXT NOT NULL,
             performed_by TEXT DEFAULT 'System',
@@ -141,9 +187,9 @@ def init_db():
     ''')
     
     # Manifest Staging table (FIX: Prevents invoices from disappearing)
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         CREATE TABLE IF NOT EXISTS manifest_staging (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             session_id TEXT NOT NULL,
             invoice_id INTEGER NOT NULL,
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -152,29 +198,28 @@ def init_db():
     ''')
     
     # Create index for faster staging queries
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         CREATE INDEX IF NOT EXISTS idx_staging_session 
         ON manifest_staging(session_id)
     ''')
     
-    conn.commit()
-    conn.close()
-    print(f"Database initialized at: {DB_PATH}")
+    db.commit()
+    db.close()
+    print("Database schema verified via SQLAlchemy")
     
     # Check if we need to create a default admin user
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute('SELECT count(*) FROM users')
-    if c.fetchone()[0] == 0:
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'SELECT count(*) FROM users')
+    if result.fetchone()[0] == 0:
         pass_hash = hashlib.sha256("admin".encode()).hexdigest()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute('''
+        result = execute_sqlite_wrapper(db, '''
             INSERT INTO users (username, password_hash, is_admin, can_manifest, created_at)
             VALUES (?, ?, ?, ?, ?)
         ''', ('admin', pass_hash, 1, 1, now))
-        conn.commit()
+        db.commit()
         print("Created default admin user (admin/admin)")
-    conn.close()
+    db.close()
 
 # =============================================
 # ORDER FUNCTIONS
@@ -182,83 +227,77 @@ def init_db():
 
 def get_all_orders(allocated: bool = False) -> List[Dict]:
     """Get all orders. If allocated=False, only return pending orders."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     # Modified to only show INVOICE type in the main lists and filter by status
     if allocated:
         # Show allocated invoices
-        cursor.execute("SELECT * FROM orders WHERE type = 'INVOICE' ORDER BY date_processed DESC")
+        result = execute_sqlite_wrapper(db, "SELECT * FROM orders WHERE type = 'INVOICE' ORDER BY date_processed DESC")
     else:
         # Show pending invoices (not allocated and not cancelled)
-        cursor.execute("SELECT * FROM orders WHERE is_allocated = 0 AND type = 'INVOICE' AND status != 'CANCELLED' ORDER BY date_processed DESC")
+        result = execute_sqlite_wrapper(db, "SELECT * FROM orders WHERE is_allocated = 0 AND type = 'INVOICE' AND status != 'CANCELLED' ORDER BY date_processed DESC")
     
-    rows = cursor.fetchall()
-    conn.close()
+    rows = result.fetchall()
+    db.close()
     
     # Convert to list of dicts matching the old JSON format
-    return [dict(row) for row in rows]
+    return [dict(row._mapping) for row in rows]
 
 def get_order_by_filename(filename: str) -> Optional[Dict]:
     """Get a single order by filename."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM orders WHERE filename = ?', (filename,))
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'SELECT * FROM orders WHERE filename = ?', (filename,))
+    row = result.fetchone()
+    db.close()
+    return dict(row._mapping) if row else None
     
 def get_order_by_invoice_number(invoice_number: str) -> Optional[Dict]:
     """Get a single order by invoice number."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM orders WHERE invoice_number = ? AND type = 'INVOICE'", (invoice_number,))
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, "SELECT * FROM orders WHERE invoice_number = ? AND type = 'INVOICE'", (invoice_number,))
+    row = result.fetchone()
+    db.close()
+    return dict(row._mapping) if row else None
 
 def update_order_value(invoice_number: str, new_value: str, original_value: str = None) -> bool:
     """Update the value of an order (used for Partial Credit)."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     try:
         if original_value:
-             cursor.execute("UPDATE orders SET total_value = ?, original_value = ? WHERE invoice_number = ?", 
+             result = execute_sqlite_wrapper(db, "UPDATE orders SET total_value = ?, original_value = ? WHERE invoice_number = ?", 
                            (new_value, original_value, invoice_number))
         else:
-             cursor.execute("UPDATE orders SET total_value = ? WHERE invoice_number = ?", 
+             result = execute_sqlite_wrapper(db, "UPDATE orders SET total_value = ? WHERE invoice_number = ?", 
                            (new_value, invoice_number))
-        updated = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
+        updated = result.rowcount > 0
+        db.commit()
+        db.close()
         return updated
     except Exception as e:
         print(f"Error updating order value: {e}")
-        conn.close()
+        db.close()
         return False
 
 def cancel_order(invoice_number: str) -> bool:
     """Mark an order as CANCELLED (used for Full Credit)."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     try:
-        cursor.execute("UPDATE orders SET status = 'CANCELLED' WHERE invoice_number = ?", (invoice_number,))
-        updated = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
+        result = execute_sqlite_wrapper(db, "UPDATE orders SET status = 'CANCELLED' WHERE invoice_number = ?", (invoice_number,))
+        updated = result.rowcount > 0
+        db.commit()
+        db.close()
         return updated
     except Exception as e:
         print(f"Error cancelling order: {e}")
-        conn.close()
+        db.close()
         return False
 
 def add_order(order_data: Dict) -> bool:
     """Add a new order/credit note to the database. Returns True if successful."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     try:
-        cursor.execute('''
+        result = execute_sqlite_wrapper(db, '''
             INSERT INTO orders (filename, date_processed, customer_name, total_value, 
                               order_number, invoice_number, invoice_date, area,
                               type, reference_number, original_value, status, customer_number)
@@ -278,60 +317,56 @@ def add_order(order_data: Dict) -> bool:
             order_data.get('status', 'PENDING'),
             order_data.get('customer_number', 'N/A')
         ))
-        conn.commit()
-        conn.close()
+        db.commit()
+        db.close()
         return True
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         # Duplicate filename
-        conn.close()
+        db.close()
         return False
 
 def allocate_orders(filenames: List[str], manifest_number: str = None) -> int:
     """Mark orders as allocated. Returns count of updated orders."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     allocated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     placeholders = ','.join(['?' for _ in filenames])
     
-    cursor.execute(f'''
+    result = execute_sqlite_wrapper(db, f'''
         UPDATE orders 
         SET is_allocated = 1, allocated_date = ?, manifest_number = ?
         WHERE filename IN ({placeholders})
     ''', [allocated_date, manifest_number] + filenames)
     
-    updated = cursor.rowcount
-    conn.commit()
-    conn.close()
+    updated = result.rowcount
+    db.commit()
+    db.close()
     return updated
 
 def get_areas() -> List[str]:
     """Get unique areas from all orders."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT DISTINCT area FROM orders WHERE area != "UNKNOWN" ORDER BY area')
-    rows = cursor.fetchall()
-    conn.close()
-    return [row['area'] for row in rows]
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'SELECT DISTINCT area FROM orders WHERE area != "UNKNOWN" ORDER BY area')
+    rows = result.fetchall()
+    db.close()
+    return [row._mapping['area'] for row in rows]
 
 def get_all_customers() -> List[str]:
     """Get unique customer names from all orders (pending and allocated)."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT DISTINCT customer_name FROM orders ORDER BY customer_name')
-    rows = cursor.fetchall()
-    conn.close()
-    return [row['customer_name'] for row in rows]
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'SELECT DISTINCT customer_name FROM orders ORDER BY customer_name')
+    rows = result.fetchall()
+    db.close()
+    return [row._mapping['customer_name'] for row in rows]
 
 def search_orders(query: str) -> List[Dict]:
     """Search for orders (pending or allocated) by invoice, order #, or customer."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     # We want to match partial strings
     like_query = f"%{query}%"
     
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         SELECT * FROM orders 
         WHERE invoice_number LIKE ? 
             OR order_number LIKE ? 
@@ -342,37 +377,35 @@ def search_orders(query: str) -> List[Dict]:
         LIMIT 50
     ''', (like_query, like_query, like_query, like_query, like_query))
     
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    rows = result.fetchall()
+    db.close()
+    return [dict(row._mapping) for row in rows]
 
 def deallocate_orders(filenames: List[str]) -> int:
     """Reset orders to pending status (un-allocate). Returns count of updated orders."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     if not filenames:
         return 0
 
     placeholders = ','.join(['?' for _ in filenames])
     
-    cursor.execute(f'''
+    result = execute_sqlite_wrapper(db, f'''
         UPDATE orders 
         SET is_allocated = 0, allocated_date = NULL, manifest_number = NULL
         WHERE filename IN ({placeholders})
     ''', filenames)
     
-    updated = cursor.rowcount
-    conn.commit()
-    conn.close()
+    updated = result.rowcount
+    db.commit()
+    db.close()
     return updated
 
 def get_available_orders_excluding_staging():
     """Return orders not allocated and not present in manifest staging."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
 
-    cursor.execute("""
+    result = execute_sqlite_wrapper(db, """
         SELECT *
         FROM orders o
         WHERE o.id NOT IN (
@@ -388,9 +421,9 @@ def get_available_orders_excluding_staging():
         ORDER BY o.date_processed DESC
     """)
 
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    rows = result.fetchall()
+    db.close()
+    return [dict(row._mapping) for row in rows]
 
 # =============================================
 # MANIFEST STAGING FUNCTIONS (FIX FOR WORKFLOW BUG)
@@ -398,40 +431,39 @@ def get_available_orders_excluding_staging():
 
 def add_to_staging(session_id: str, filenames: List[str]) -> int:
     """Add invoices to manifest staging. Invoices remain AVAILABLE until confirmed. Returns count added."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     if not filenames or not session_id:
         return 0
     
     # Get invoice IDs from filenames
     placeholders = ','.join(['?' for _ in filenames])
-    cursor.execute(f'''
+    result = execute_sqlite_wrapper(db, f'''
         SELECT id, filename FROM orders 
         WHERE filename IN ({placeholders})
     ''', filenames)
     
-    invoice_rows = cursor.fetchall()
+    invoice_rows = result.fetchall()
     added_count = 0
     
     for row in invoice_rows:
-        invoice_id = row['id']
+        invoice_id = row._mapping['id']
         # Check if already in staging for this session
-        cursor.execute('''
+        result = execute_sqlite_wrapper(db, '''
             SELECT id FROM manifest_staging 
             WHERE session_id = ? AND invoice_id = ?
         ''', (session_id, invoice_id))
         
-        if cursor.fetchone() is None:
+        if result.fetchone() is None:
             # Not in staging, add it
-            cursor.execute('''
+            result = execute_sqlite_wrapper(db, '''
                 INSERT INTO manifest_staging (session_id, invoice_id)
                 VALUES (?, ?)
             ''', (session_id, invoice_id))
             added_count += 1
     
-    conn.commit()
-    conn.close()
+    db.commit()
+    db.close()
     return added_count
 
 def get_current_manifest(session_id: str, manifest_number: str = None) -> List[Dict]:
@@ -442,12 +474,11 @@ def get_current_manifest(session_id: str, manifest_number: str = None) -> List[D
     - Plus in-progress staging entries for this session (that aren't already finalized)
     - Only type='INVOICE' rows, no duplicates
     """
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     if manifest_number:
         # Return finalized invoices for this manifest UNION with NEW staging entries only
-        cursor.execute('''
+        result = execute_sqlite_wrapper(db, '''
             SELECT o.* FROM orders o
             WHERE o.manifest_number = ? AND o.is_allocated = 1 AND o.type = 'INVOICE'
             UNION
@@ -461,7 +492,7 @@ def get_current_manifest(session_id: str, manifest_number: str = None) -> List[D
         ''', (manifest_number, session_id, manifest_number))
     else:
         # Staging only (backward compatible) - exclude already allocated
-        cursor.execute('''
+        result = execute_sqlite_wrapper(db, '''
             SELECT o.* 
             FROM orders o
             INNER JOIN manifest_staging ms ON ms.invoice_id = o.id
@@ -471,43 +502,42 @@ def get_current_manifest(session_id: str, manifest_number: str = None) -> List[D
             ORDER BY ms.added_at ASC
         ''', (session_id,))
     
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    rows = result.fetchall()
+    db.close()
+    return [dict(row._mapping) for row in rows]
 
 def remove_from_staging(session_id: str, filenames: List[str]) -> int:
     """Remove invoices from manifest staging. Makes them instantly available again. Returns count removed."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     if not filenames or not session_id:
         return 0
     
     # Get invoice IDs from filenames
     placeholders = ','.join(['?' for _ in filenames])
-    cursor.execute(f'''
+    result = execute_sqlite_wrapper(db, f'''
         SELECT id FROM orders 
         WHERE filename IN ({placeholders})
     ''', filenames)
     
-    invoice_ids = [row['id'] for row in cursor.fetchall()]
+    invoice_ids = [row['id'] for row in result.fetchall()]
     
     if not invoice_ids:
-        conn.close()
+        db.close()
         return 0
     
     # Delete from staging
     id_placeholders = ','.join(['?' for _ in invoice_ids])
-    cursor.execute(f'''
+    result = execute_sqlite_wrapper(db, f'''
         DELETE FROM manifest_staging
         WHERE session_id = ? AND invoice_id IN ({id_placeholders})
     ''', [session_id] + invoice_ids)
     
-    removed = cursor.rowcount
+    removed = result.rowcount
     
     # FIX: Clear allocation flags for removed invoices
     # BUT ONLY if they're not in finalized reports (to preserve dispatch history)
-    cursor.execute(f'''
+    result = execute_sqlite_wrapper(db, f'''
         UPDATE orders
         SET is_allocated = 0, allocated_date = NULL, manifest_number = NULL
         WHERE id IN ({id_placeholders})
@@ -516,20 +546,19 @@ def remove_from_staging(session_id: str, filenames: List[str]) -> int:
         ))
     ''', invoice_ids)
     
-    conn.commit()
-    conn.close()
+    db.commit()
+    db.close()
     return removed
 
 def clear_staging(session_id: str) -> int:
     """Clear all staging entries for a session. Returns count cleared."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
-    cursor.execute('DELETE FROM manifest_staging WHERE session_id = ?', (session_id,))
-    cleared = cursor.rowcount
+    result = execute_sqlite_wrapper(db, 'DELETE FROM manifest_staging WHERE session_id = ?', (session_id,))
+    cleared = result.rowcount
     
-    conn.commit()
-    conn.close()
+    db.commit()
+    db.close()
     return cleared
 
 # =============================================
@@ -542,20 +571,18 @@ def hash_password(password: str) -> str:
 
 def get_user(username: str) -> Optional[Dict]:
     """Get a user by username."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'SELECT * FROM users WHERE username = ?', (username,))
+    row = result.fetchone()
+    db.close()
+    return dict(row._mapping) if row else None
 
 def create_user(username: str, password: str, is_admin: bool = False, can_manifest: bool = True) -> bool:
     """Create a new user. Returns True if successful."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     try:
-        cursor.execute('''
+        result = execute_sqlite_wrapper(db, '''
             INSERT INTO users (username, password_hash, is_admin, can_manifest, created_at)
             VALUES (?, ?, ?, ?, ?)
         ''', (
@@ -565,11 +592,11 @@ def create_user(username: str, password: str, is_admin: bool = False, can_manife
             1 if can_manifest else 0,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ))
-        conn.commit()
-        conn.close()
+        db.commit()
+        db.close()
         return True
-    except sqlite3.IntegrityError:
-        conn.close()
+    except IntegrityError:
+        db.close()
         return False
 
 def verify_user(username: str, password: str) -> Optional[Dict]:
@@ -581,27 +608,24 @@ def verify_user(username: str, password: str) -> Optional[Dict]:
 
 def get_all_users() -> List[Dict]:
     """Get all users (without password hashes)."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT id, username, is_admin, can_manifest, created_at FROM users')
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'SELECT id, username, is_admin, can_manifest, created_at FROM users')
+    rows = result.fetchall()
+    db.close()
+    return [dict(row._mapping) for row in rows]
 
 def delete_user(username: str) -> bool:
     """Delete a user by username."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM users WHERE username = ?', (username,))
-    deleted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'DELETE FROM users WHERE username = ?', (username,))
+    deleted = result.rowcount > 0
+    db.commit()
+    db.close()
     return deleted
 
 def update_user(username: str, password: str = None, is_admin: bool = None, can_manifest: bool = None) -> bool:
     """Update user details."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     updates = []
     params = []
@@ -617,14 +641,14 @@ def update_user(username: str, password: str = None, is_admin: bool = None, can_
         params.append(1 if can_manifest else 0)
     
     if not updates:
-        conn.close()
+        db.close()
         return False
     
     params.append(username)
-    cursor.execute(f'UPDATE users SET {", ".join(updates)} WHERE username = ?', params)
-    updated = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
+    result = execute_sqlite_wrapper(db, f'UPDATE users SET {", ".join(updates)} WHERE username = ?', params)
+    updated = result.rowcount > 0
+    db.commit()
+    db.close()
     return updated
 
 # =============================================
@@ -633,10 +657,9 @@ def update_user(username: str, password: str = None, is_admin: bool = None, can_
 
 def save_report(report_data: Dict) -> int:
     """Save a dispatch report. Returns the report ID."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
-    cursor.execute('''
+    result = execute_sqlite_wrapper(db, '''
         INSERT INTO reports (manifest_number, date, date_dispatched, driver, assistant, checker, reg_number,
                             pallets_brown, pallets_blue, crates, mileage, total_value, 
                             total_sku, total_weight, created_at)
@@ -659,11 +682,11 @@ def save_report(report_data: Dict) -> int:
         datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ))
     
-    report_id = cursor.lastrowid
+    report_id = result.inserted_primary_key[0] if getattr(result, 'inserted_primary_key', None) else None
     
     # Save report items (invoices)
     for invoice in report_data.get('invoices', []):
-        cursor.execute('''
+        result = execute_sqlite_wrapper(db, '''
             INSERT INTO report_items (report_id, invoice_number, order_number, customer_name,
                                         invoice_date, area, sku, value, weight, customer_number)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -684,33 +707,33 @@ def save_report(report_data: Dict) -> int:
     session_id = report_data.get('session_id')
     if session_id:
         # Get all invoice filenames from staging for this session
-        cursor.execute('''
+        result = execute_sqlite_wrapper(db, '''
             SELECT o.filename
             FROM orders o
             INNER JOIN manifest_staging ms ON ms.invoice_id = o.id
             WHERE ms.session_id = ?
         ''', (session_id,))
         
-        staged_filenames = [row['filename'] for row in cursor.fetchall()]
+        staged_filenames = [row['filename'] for row in result.fetchall()]
         
         if staged_filenames:
             # Update invoices to DISPATCHED
             placeholders = ','.join(['?' for _ in staged_filenames])
             allocated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute(f'''
+            result = execute_sqlite_wrapper(db, f'''
                 UPDATE orders
                 SET is_allocated = 1, allocated_date = ?, manifest_number = ?
                 WHERE filename IN ({placeholders})
             ''', [allocated_date, report_data.get('manifestNumber')] + staged_filenames)
             
-            print(f"Finalized {cursor.rowcount} invoices from staging for session: {session_id}")
+            print(f"Finalized {result.rowcount} invoices from staging for session: {session_id}")
         
         # Clear staging for this session
-        cursor.execute('DELETE FROM manifest_staging WHERE session_id = ?', (session_id,))
+        result = execute_sqlite_wrapper(db, 'DELETE FROM manifest_staging WHERE session_id = ?', (session_id,))
         print(f"Cleared staging for session: {session_id}")
     
-    conn.commit()
-    conn.close()
+    db.commit()
+    db.close()
 
     # Log the event
     log_manifest_event(report_data.get('manifestNumber'), 'CREATED', 'System')
@@ -719,8 +742,7 @@ def save_report(report_data: Dict) -> int:
 
 def get_reports(date_from: str = None, date_to: str = None) -> List[Dict]:
     """Get all reports with their items, optionally filtered by date range."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     query = 'SELECT * FROM reports'
     params = []
@@ -737,58 +759,56 @@ def get_reports(date_from: str = None, date_to: str = None) -> List[Dict]:
         query += ' WHERE ' + ' AND '.join(conditions)
     
     query += ' ORDER BY id DESC'
-    cursor.execute(query, params)
-    reports = [dict(row) for row in cursor.fetchall()]
+    result = execute_sqlite_wrapper(db, query, params)
+    reports = [dict(row) for row in result.fetchall()]
     
     # Add items to each report
     for report in reports:
-        cursor.execute('SELECT * FROM report_items WHERE report_id = ?', (report['id'],))
-        report['invoices'] = [dict(row) for row in cursor.fetchall()]
+        result = execute_sqlite_wrapper(db, 'SELECT * FROM report_items WHERE report_id = ?', (report['id'],))
+        report['invoices'] = [dict(row) for row in result.fetchall()]
     
-    conn.close()
+    db.close()
     return reports
 
 def get_manifest_details(manifest_number: str) -> Optional[Dict]:
     """Get full details of a specific manifest including invoices and events."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     # Get Report Metadata
-    cursor.execute('SELECT * FROM reports WHERE manifest_number = ?', (manifest_number,))
-    report = cursor.fetchone()
+    result = execute_sqlite_wrapper(db, 'SELECT * FROM reports WHERE manifest_number = ?', (manifest_number,))
+    report = result.fetchone()
     
     if not report:
-        conn.close()
+        db.close()
         return None
         
     result = dict(report)
     
     # Get Linked Invoices
-    cursor.execute('SELECT * FROM report_items WHERE report_id = ?', (result['id'],))
-    result['invoices'] = [dict(row) for row in cursor.fetchall()]
+    result = execute_sqlite_wrapper(db, 'SELECT * FROM report_items WHERE report_id = ?', (result['id'],))
+    result['invoices'] = [dict(row) for row in result.fetchall()]
     
     # Get Audit Events
-    cursor.execute('SELECT * FROM manifest_events WHERE manifest_number = ? ORDER BY timestamp DESC', (manifest_number,))
-    result['events'] = [dict(row) for row in cursor.fetchall()]
+    result = execute_sqlite_wrapper(db, 'SELECT * FROM manifest_events WHERE manifest_number = ? ORDER BY timestamp DESC', (manifest_number,))
+    result['events'] = [dict(row) for row in result.fetchall()]
     
-    conn.close()
+    db.close()
     return result
 
 def log_manifest_event(manifest_number: str, event_type: str, performed_by: str = 'System') -> bool:
     """Log an event for a manifest."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     try:
-        cursor.execute('''
+        result = execute_sqlite_wrapper(db, '''
             INSERT INTO manifest_events (manifest_number, event_type, performed_by, timestamp)
             VALUES (?, ?, ?, ?)
         ''', (manifest_number, event_type, performed_by, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        conn.close()
+        db.commit()
+        db.close()
         return True
     except Exception as e:
         print(f"Error logging event: {e}")
-        conn.close()
+        db.close()
         return False
 
 # =============================================
@@ -797,49 +817,45 @@ def log_manifest_event(manifest_number: str, event_type: str, performed_by: str 
 
 def get_settings(category: str) -> List[str]:
     """Get all values for a settings category (drivers, assistants, checkers, routes)."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT value FROM settings WHERE category = ? ORDER BY value', (category,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [row['value'] for row in rows]
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'SELECT value FROM settings WHERE category = ? ORDER BY value', (category,))
+    rows = result.fetchall()
+    db.close()
+    return [row._mapping['value'] for row in rows]
 
 def add_setting(category: str, value: str) -> bool:
     """Add a setting value."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     try:
-        cursor.execute('INSERT INTO settings (category, value) VALUES (?, ?)', (category, value))
-        conn.commit()
-        conn.close()
+        result = execute_sqlite_wrapper(db, 'INSERT INTO settings (category, value) VALUES (?, ?)', (category, value))
+        db.commit()
+        db.close()
         return True
-    except sqlite3.IntegrityError:
-        conn.close()
+    except IntegrityError:
+        db.close()
         return False
 
 def delete_setting(category: str, value: str) -> bool:
     """Delete a setting value."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM settings WHERE category = ? AND value = ?', (category, value))
-    deleted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'DELETE FROM settings WHERE category = ? AND value = ?', (category, value))
+    deleted = result.rowcount > 0
+    db.commit()
+    db.close()
     return deleted
 
 def update_setting(category: str, old_value: str, new_value: str) -> bool:
     """Update a setting value."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     try:
-        cursor.execute('UPDATE settings SET value = ? WHERE category = ? AND value = ?', 
+        result = execute_sqlite_wrapper(db, 'UPDATE settings SET value = ? WHERE category = ? AND value = ?', 
                       (new_value, category, old_value))
-        updated = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
+        updated = result.rowcount > 0
+        db.commit()
+        db.close()
         return updated
-    except sqlite3.IntegrityError:
-        conn.close()
+    except IntegrityError:
+        db.close()
         return False
 
 # =============================================
@@ -848,46 +864,42 @@ def update_setting(category: str, old_value: str, new_value: str) -> bool:
 
 def get_trucks() -> List[Dict]:
     """Get all trucks."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM trucks ORDER BY reg')
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'SELECT * FROM trucks ORDER BY reg')
+    rows = result.fetchall()
+    db.close()
+    return [dict(row._mapping) for row in rows]
 
 def add_truck(reg: str, driver: str = None, assistant: str = None, checker: str = None) -> bool:
     """Add a truck."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     try:
-        cursor.execute('INSERT INTO trucks (reg, driver, assistant, checker) VALUES (?, ?, ?, ?)',
+        result = execute_sqlite_wrapper(db, 'INSERT INTO trucks (reg, driver, assistant, checker) VALUES (?, ?, ?, ?)',
                       (reg, driver, assistant, checker))
-        conn.commit()
-        conn.close()
+        db.commit()
+        db.close()
         return True
-    except sqlite3.IntegrityError:
-        conn.close()
+    except IntegrityError:
+        db.close()
         return False
 
 def delete_truck(reg: str) -> bool:
     """Delete a truck by registration."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM trucks WHERE reg = ?', (reg,))
-    deleted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'DELETE FROM trucks WHERE reg = ?', (reg,))
+    deleted = result.rowcount > 0
+    db.commit()
+    db.close()
     return deleted
 
 def update_truck(reg: str, driver: str = None, assistant: str = None, checker: str = None) -> bool:
     """Update truck details."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('UPDATE trucks SET driver = ?, assistant = ?, checker = ? WHERE reg = ?',
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'UPDATE trucks SET driver = ?, assistant = ?, checker = ? WHERE reg = ?',
                   (driver, assistant, checker, reg))
-    updated = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
+    updated = result.rowcount > 0
+    db.commit()
+    db.close()
     return updated
 
 # =============================================
@@ -896,36 +908,33 @@ def update_truck(reg: str, driver: str = None, assistant: str = None, checker: s
 
 def get_customer_routes() -> Dict[str, str]:
     """Get all customer route mappings."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT customer_name, route_name FROM customer_routes')
-    rows = cursor.fetchall()
-    conn.close()
-    return {row['customer_name']: row['route_name'] for row in rows}
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'SELECT customer_name, route_name FROM customer_routes')
+    rows = result.fetchall()
+    db.close()
+    return {row._mapping['customer_name']: row._mapping['route_name'] for row in rows}
 
 def add_customer_route(customer_name: str, route_name: str) -> bool:
     """Add or update a customer route mapping."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     try:
         # Use REPLACE to handle updates
-        cursor.execute('REPLACE INTO customer_routes (customer_name, route_name) VALUES (?, ?)', 
+        result = execute_sqlite_wrapper(db, 'REPLACE INTO customer_routes (customer_name, route_name) VALUES (?, ?)', 
                       (customer_name, route_name))
-        conn.commit()
-        conn.close()
+        db.commit()
+        db.close()
         return True
-    except sqlite3.IntegrityError:
-        conn.close()
+    except IntegrityError:
+        db.close()
         return False
 
 def delete_customer_route(customer_name: str) -> bool:
     """Delete a customer route mapping."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM customer_routes WHERE customer_name = ?', (customer_name,))
-    deleted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
+    db = SessionLocal()
+    result = execute_sqlite_wrapper(db, 'DELETE FROM customer_routes WHERE customer_name = ?', (customer_name,))
+    deleted = result.rowcount > 0
+    db.commit()
+    db.close()
     return deleted
 
 # =============================================
@@ -983,8 +992,7 @@ def get_dispatched_invoices(
     Returns:
         Tuple of (results list, total count after filters)
     """
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     # Base query - JOIN reports and report_items to get invoice-level rows
     query = """
@@ -1054,8 +1062,8 @@ def get_dispatched_invoices(
     
     # Get total count (before pagination)
     count_query = f"SELECT COUNT(*) FROM ({query})"
-    cursor.execute(count_query, params)
-    total_count = cursor.fetchone()[0]
+    result = execute_sqlite_wrapper(db, count_query, params)
+    total_count = result.fetchone()[0]
     
     # Add sorting
     valid_sort_fields = {
@@ -1075,9 +1083,9 @@ def get_dispatched_invoices(
     params.extend([limit, offset])
     
     # Execute query
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
+    result = execute_sqlite_wrapper(db, query, params)
+    rows = result.fetchall()
+    db.close()
     
     # Convert to list of dicts
     results = []
@@ -1115,8 +1123,7 @@ def get_outstanding_orders() -> List[Dict]:
     Returns:
         List of outstanding orders with: invoice_number, order_number, customer_name, invoice_date
     """
-    conn = get_connection()
-    cursor = conn.cursor()
+    db = SessionLocal()
     
     query = """
         SELECT 
@@ -1135,9 +1142,9 @@ def get_outstanding_orders() -> List[Dict]:
         ORDER BY invoice_date DESC, invoice_number DESC
     """
     
-    cursor.execute(query)
-    rows = cursor.fetchall()
-    conn.close()
+    result = execute_sqlite_wrapper(db, query)
+    rows = result.fetchall()
+    db.close()
     
     # Convert to list of dicts
     results = []
