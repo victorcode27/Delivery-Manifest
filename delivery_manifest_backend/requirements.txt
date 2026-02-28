@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+python-dotenv
+pydantic-settings
+pdfplumber
+python-multipart
+
+python-jose[cryptography]
+passlib[bcrypt]
+
+# Optional — uncomment when email notifications are enabled
+# sendgrid
+# twilio
