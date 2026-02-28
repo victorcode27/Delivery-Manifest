@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 from typing import List, Dict, Optional
 import hashlib
+import bcrypt
 from db_config import SessionLocal
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -602,7 +603,19 @@ def create_user(username: str, password: str, is_admin: bool = False, can_manife
 def verify_user(username: str, password: str) -> Optional[Dict]:
     """Verify user credentials. Returns user dict if valid, None otherwise."""
     user = get_user(username)
-    if user and user['password_hash'] == hash_password(password):
+    if not user:
+        return None
+
+    stored_hash = user["password_hash"]
+
+    # bcrypt hash
+    if stored_hash.startswith("$2"):
+        if bcrypt.checkpw(password.encode(), stored_hash.encode()):
+            return user
+        return None
+
+    # legacy SHA-256
+    if hashlib.sha256(password.encode()).hexdigest() == stored_hash:
         return user
     return None
 
