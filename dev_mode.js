@@ -42,7 +42,7 @@ class DevModeSystem {
 
     async fetchHealth() {
         try {
-            const res = await fetch(`/health`);
+            const res = await fetch(`/api/health`);
             if (res.ok) {
                 return await res.json();
             }

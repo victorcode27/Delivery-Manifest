@@ -9,7 +9,7 @@
 
 // API Configuration
 // Relative path — works on any host/port (local, LAN, or Render production).
-const API_BASE_URL = '';
+const API_BASE_URL = '/api';
 const API_ENDPOINT = `${API_BASE_URL}/reports/outstanding`;
 
 // Safety check: Log resolved API URL on startup
