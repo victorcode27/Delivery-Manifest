@@ -76,11 +76,11 @@ async def on_shutdown() -> None:
 
 # ── Static frontend (mounted last; all API routes under /api take priority) ───
 
-# Resolve to the backend root (delivery_manifest_backend/) — two levels up from
-# this file.  Never serve the parent directory; that would expose source code,
-# .env files, and database dumps to anonymous HTTP requests.
-_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_STATIC_DIR   = settings.STATIC_DIR or os.path.join(_BACKEND_ROOT, "static")
+# Resolve to the repo root — three levels up from this file:
+#   delivery_manifest_backend/app/main.py → app/ → delivery_manifest_backend/ → repo root
+# The frontend HTML/CSS/JS files live at the repo root alongside this package.
+_REPO_ROOT  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_STATIC_DIR = settings.STATIC_DIR or _REPO_ROOT
 
 if os.path.isdir(_STATIC_DIR):
     app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
