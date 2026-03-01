@@ -6,6 +6,5 @@ python-dotenv
 pdfplumber
 python-multipart
 bcrypt
-passlib[bcrypt]
 python-jose[cryptography]
 pydantic-settings

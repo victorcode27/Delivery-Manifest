@@ -1,7 +1,8 @@
 """
 app/core/security.py
 
-Password hashing (bcrypt via passlib) and JWT utilities (python-jose).
+Password hashing (bcrypt direct — passlib removed due to incompatibility
+with bcrypt 4.x on Python 3.14) and JWT utilities (python-jose).
 
 All token logic lives here.  FastAPI dependency helpers that need DB access
 live in app/core/deps.py to avoid circular imports.
@@ -11,47 +12,42 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import bcrypt as _bcrypt_lib
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from delivery_manifest_backend.app.core.config import settings
 
 # ── Password helpers ──────────────────────────────────────────────────────────
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# bcrypt's hard limit is 72 bytes.  bcrypt 3.x silently truncated; bcrypt 4.x
-# raises ValueError instead.  We truncate explicitly so behaviour is identical
-# across all installed versions — no login attempt can crash with a 500.
+# bcrypt's hard limit is 72 bytes.  bcrypt 4.x raises ValueError for longer
+# inputs.  We truncate at the byte level so every call is safe.
 _BCRYPT_MAX_BYTES = 72
 
 
-def _safe_password(password: str) -> str:
-    """Return *password* truncated to 72 UTF-8 bytes if necessary."""
-    encoded = password.encode("utf-8")
-    if len(encoded) <= _BCRYPT_MAX_BYTES:
-        return password
-    # Trim at byte boundary; drop any partial multi-byte char at the cut point.
-    return encoded[:_BCRYPT_MAX_BYTES].decode("utf-8", errors="ignore")
+def _to_bcrypt_bytes(password: str) -> bytes:
+    """Encode *password* to UTF-8 and cap at 72 bytes."""
+    return password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
 
 
 def get_password_hash(password: str) -> str:
     """Return a bcrypt hash of *password* (capped at 72 bytes)."""
-    return _pwd_context.hash(_safe_password(password))
+    return _bcrypt_lib.hashpw(_to_bcrypt_bytes(password), _bcrypt_lib.gensalt()).decode("utf-8")
 
 
 def verify_password(plain_password: str, stored_hash: str) -> bool:
     """
     Verify *plain_password* against *stored_hash*.
 
-    Handles both new-style bcrypt hashes (start with ``$2b$``) and the
+    Handles both new-style bcrypt hashes (start with ``$2``) and the
     legacy SHA-256 hex strings written by the original flat-file backend.
     This lets existing users log in without a forced password reset.
     """
     if stored_hash.startswith("$2"):
-        # Apply the same 72-byte cap used at hash time so verification matches.
-        return _pwd_context.verify(_safe_password(plain_password), stored_hash)
-    # Legacy SHA-256 fallback — SHA-256 has no length limit, no truncation needed.
+        return _bcrypt_lib.checkpw(
+            _to_bcrypt_bytes(plain_password),
+            stored_hash.encode("utf-8"),
+        )
+    # Legacy SHA-256 fallback — SHA-256 has no length limit.
     return hashlib.sha256(plain_password.encode()).hexdigest() == stored_hash
 
 

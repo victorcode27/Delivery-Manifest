@@ -8,7 +8,7 @@ pdfplumber
 python-multipart
 
 python-jose[cryptography]
-passlib[bcrypt]
+bcrypt
 
 # Optional — uncomment when email notifications are enabled
 # sendgrid
