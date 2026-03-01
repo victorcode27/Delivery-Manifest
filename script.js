@@ -12,7 +12,7 @@ let currentReportView = 'dispatched'; // 'dispatched' or 'outstanding'
 // API Configuration
 // Use relative paths so fetch() calls work on any host/port (local or Render production).
 // "\'"' means all requests go to the same origin serving this page.
-const API_URL = '';
+const API_URL = '/api';
 
 // Safety check: Log resolved origin on startup
 console.log(`[API Config] Using relative API paths. Page origin: ${window.location.origin}`);
@@ -130,7 +130,7 @@ async function loadSettings() {
 
     if (allFailed) {
         console.error('[Settings] All endpoints unreachable — backend may not be running.');
-        logError('Connection Failed: Backend unreachable. Ensure the server is running on port 8000.');
+        logError('Connection Failed: Backend unreachable. Please try again later.');
     } else {
         console.log('[Settings] Settings loaded from server.');
     }
@@ -3066,7 +3066,7 @@ async function handleLogin() {
     console.log(`[Login] Attempting login for user: "${username}"`);
 
     try {
-        const response = await fetch('/auth/login', {
+        const response = await fetch('/api/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password })
