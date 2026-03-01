@@ -13,7 +13,7 @@ import time
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from delivery_manifest_backend.app.core.config import settings
 from delivery_manifest_backend.app.core.logger import get_logger
@@ -74,21 +74,27 @@ async def on_shutdown() -> None:
     logger.info("Delivery Manifest API shut down.")
 
 
-# ── Static frontend (mounted last; all API routes under /api take priority) ───
-
-# Resolve to the repo root — three levels up from this file:
+# ── Static frontend ───────────────────────────────────────────────────────────
+# GET-only catch-all so POST/PUT/DELETE to /api/* are never intercepted.
+#
+# Path resolution (three dirname hops from this file):
 #   delivery_manifest_backend/app/main.py → app/ → delivery_manifest_backend/ → repo root
-# The frontend HTML/CSS/JS files live at the repo root alongside this package.
 _REPO_ROOT  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _STATIC_DIR = settings.STATIC_DIR or _REPO_ROOT
 
-if os.path.isdir(_STATIC_DIR):
-    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
-else:
-    logger.warning(
-        f"Static directory '{_STATIC_DIR}' not found — frontend will not be served. "
-        "Set STATIC_DIR in .env to the absolute path of your frontend build output."
-    )
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    """Serve static frontend files; fall back to index.html for SPA routing."""
+    candidate = os.path.join(_STATIC_DIR, full_path)
+    if full_path and os.path.isfile(candidate):
+        return FileResponse(candidate)
+    index = os.path.join(_STATIC_DIR, "index.html")
+    if os.path.isfile(index):
+        return FileResponse(index)
+    logger.warning(f"Frontend not found: _STATIC_DIR={_STATIC_DIR!r}")
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404, detail="Frontend not found")
 
 
 # ── Dev entry point ───────────────────────────────────────────────────────────
