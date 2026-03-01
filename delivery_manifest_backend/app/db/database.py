@@ -321,6 +321,27 @@ def _create_tables(db) -> None:
     _create_indexes(db)
 
 
+def _column_exists(db, table: str, column: str) -> bool:
+    """
+    Check whether *column* exists in *table* without raising an exception.
+
+    Uses information_schema (PostgreSQL) or PRAGMA table_info (SQLite) so
+    the check never aborts the current transaction.
+    """
+    if _is_sqlite:
+        result = db.execute(text(f"PRAGMA table_info({table})"))
+        return any(row[1] == column for row in result.fetchall())
+    else:
+        result = db.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = :t AND column_name = :c"
+            ),
+            {"t": table, "c": column},
+        )
+        return result.fetchone() is not None
+
+
 def _run_migrations(db) -> None:
     """Add columns that were introduced after the initial schema."""
     migrations = [
@@ -332,13 +353,11 @@ def _run_migrations(db) -> None:
     ]
     for table, column, sql in migrations:
         try:
-            db.execute(text(f"SELECT {column} FROM {table} LIMIT 1"))
-        except OperationalError:
-            try:
+            if not _column_exists(db, table, column):
                 db.execute(text(sql))
                 logger.info(f"Migration applied: {sql}")
-            except Exception as exc:
-                logger.warning(f"Migration warning ({table}.{column}): {exc}")
+        except Exception as exc:
+            logger.warning(f"Migration warning ({table}.{column}): {exc}")
 
 
 def _create_indexes(db) -> None:
