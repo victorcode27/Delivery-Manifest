@@ -15,7 +15,7 @@ from typing import Optional
 
 from fastapi import UploadFile
 
-from app.core.logger import get_logger
+from delivery_manifest_backend.app.core.logger import get_logger
 
 logger = get_logger(__name__)
 

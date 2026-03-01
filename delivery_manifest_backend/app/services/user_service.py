@@ -11,9 +11,9 @@ from typing import Dict, List, Optional
 
 from sqlalchemy.exc import IntegrityError
 
-from app.core.logger import get_logger
-from app.core.security import hash_password, verify_password
-from app.db.database import get_db_session, execute_query
+from delivery_manifest_backend.app.core.logger import get_logger
+from delivery_manifest_backend.app.core.security import hash_password, verify_password
+from delivery_manifest_backend.app.db.database import get_db_session, execute_query
 
 logger = get_logger(__name__)
 

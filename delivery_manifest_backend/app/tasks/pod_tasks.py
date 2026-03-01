@@ -19,8 +19,8 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Set
 
-from app.core.config import settings
-from app.core.logger import get_logger
+from delivery_manifest_backend.app.core.config import settings
+from delivery_manifest_backend.app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -94,8 +94,8 @@ class FileWatcher:
 
     def _init_known_files(self) -> None:
         """Seed known_files from the current folder so we only process NEW files."""
-        from app.services.manifest_service import get_all_orders
-        from app.db.database import init_db
+        from delivery_manifest_backend.app.services.manifest_service import get_all_orders
+        from delivery_manifest_backend.app.db.database import init_db
 
         init_db()
         all_orders = get_all_orders(allocated=True) + get_all_orders(allocated=False)
@@ -121,7 +121,7 @@ class FileWatcher:
                 logger.error(f"[SKIP] No data extracted from {file_path.name}")
                 return False
 
-            from app.services.manifest_service import add_order
+            from delivery_manifest_backend.app.services.manifest_service import add_order
 
             ok = add_order(invoice_data)
             if ok:

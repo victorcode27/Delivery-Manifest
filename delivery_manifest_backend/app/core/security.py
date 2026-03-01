@@ -14,7 +14,7 @@ from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-from app.core.config import settings
+from delivery_manifest_backend.app.core.config import settings
 
 # ── Password helpers ──────────────────────────────────────────────────────────
 

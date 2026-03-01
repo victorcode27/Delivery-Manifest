@@ -13,10 +13,10 @@ All routes require a valid admin JWT (require_admin dependency).
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.deps import require_admin
-from app.core.logger import get_logger
-from app.schemas.user import UserCreate, UserUpdate
-from app.services import user_service
+from delivery_manifest_backend.app.core.deps import require_admin
+from delivery_manifest_backend.app.core.logger import get_logger
+from delivery_manifest_backend.app.schemas.user import UserCreate, UserUpdate
+from delivery_manifest_backend.app.services import user_service
 
 router = APIRouter(prefix="/users", tags=["users"])
 logger = get_logger(__name__)

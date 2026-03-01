@@ -19,7 +19,7 @@ from sqlalchemy import (
     Index, Integer, String, Text, TIMESTAMP,
 )
 from sqlalchemy.orm import relationship
-from app.db.database import Base
+from delivery_manifest_backend.app.db.database import Base
 
 
 # ── Uploaded manifest files ────────────────────────────────────────────────────

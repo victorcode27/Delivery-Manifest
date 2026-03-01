@@ -15,8 +15,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-from app.core.config import settings
-from app.core.logger import get_logger
+from delivery_manifest_backend.app.core.config import settings
+from delivery_manifest_backend.app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -397,7 +397,7 @@ def _create_indexes(db) -> None:
 
 def _seed_admin(db) -> None:
     """Create the default admin/admin user if no users exist."""
-    from app.core.security import hash_password
+    from delivery_manifest_backend.app.core.security import hash_password
     from datetime import datetime
 
     result = db.execute(text("SELECT COUNT(*) FROM users"))

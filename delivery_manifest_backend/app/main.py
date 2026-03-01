@@ -15,11 +15,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.core.config import settings
-from app.core.logger import get_logger
-from app.db.database import init_db
-from app.routes import auth, manifests, users
-from app.tasks.pod_tasks import start_watcher, stop_watcher
+from delivery_manifest_backend.app.core.config import settings
+from delivery_manifest_backend.app.core.logger import get_logger
+from delivery_manifest_backend.app.db.database import init_db
+from delivery_manifest_backend.app.routes import auth, manifests, users
+from delivery_manifest_backend.app.tasks.pod_tasks import start_watcher, stop_watcher
 
 logger = get_logger(__name__)
 
@@ -97,7 +97,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "app.main:app",
+        "delivery_manifest_backend.app.main:app",
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.DEV_MODE,

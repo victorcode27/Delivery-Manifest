@@ -35,10 +35,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
-from app.core.config import settings
-from app.core.deps import get_current_user, require_admin
-from app.core.logger import get_logger
-from app.schemas.manifest import (
+from delivery_manifest_backend.app.core.config import settings
+from delivery_manifest_backend.app.core.deps import get_current_user, require_admin
+from delivery_manifest_backend.app.core.logger import get_logger
+from delivery_manifest_backend.app.schemas.manifest import (
     AllocateRequest,
     CustomerRouteRequest,
     ManualInvoiceRequest,
@@ -47,7 +47,7 @@ from app.schemas.manifest import (
     SettingUpdateRequest,
     TruckRequest,
 )
-from app.services import manifest_service
+from delivery_manifest_backend.app.services import manifest_service
 
 router = APIRouter(tags=["manifests"])
 logger = get_logger(__name__)

@@ -8,10 +8,10 @@ POST /api/auth/login  → verify credentials, return JWT access token
 
 from fastapi import APIRouter, HTTPException
 
-from app.core.logger import get_logger
-from app.core.security import create_access_token
-from app.schemas.user import LoginRequest
-from app.services.user_service import verify_user
+from delivery_manifest_backend.app.core.logger import get_logger
+from delivery_manifest_backend.app.core.security import create_access_token
+from delivery_manifest_backend.app.schemas.user import LoginRequest
+from delivery_manifest_backend.app.services.user_service import verify_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = get_logger(__name__)

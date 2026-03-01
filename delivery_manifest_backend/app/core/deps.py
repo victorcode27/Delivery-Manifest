@@ -20,9 +20,9 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import text
 
-from app.core.logger import get_logger
-from app.core.security import decode_access_token
-from app.db.database import get_db_session
+from delivery_manifest_backend.app.core.logger import get_logger
+from delivery_manifest_backend.app.core.security import decode_access_token
+from delivery_manifest_backend.app.db.database import get_db_session
 
 logger = get_logger(__name__)
 

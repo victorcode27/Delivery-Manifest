@@ -14,7 +14,7 @@ Column notes
 from sqlalchemy import Boolean, Column, Integer, String, Text
 from sqlalchemy.orm import relationship
 
-from app.db.database import Base
+from delivery_manifest_backend.app.db.database import Base
 
 
 class User(Base):
