@@ -17,6 +17,7 @@ let currentState = {
     dateTo: null,
     filterType: 'dispatch',  // NEW: 'dispatch' or 'manifest'
     search: '',
+    route: '',
     limit: 50,
     offset: 0,
     sortBy: 'date_dispatched',
@@ -37,6 +38,7 @@ const elements = {
     filterTypeInputs: document.getElementsByName('filter-type'),  // NEW
     searchInput: document.getElementById('search-input'),
     clearSearchBtn: document.getElementById('clear-search-btn'),
+    routeFilter: document.getElementById('route-filter'),
     applyFiltersBtn: document.getElementById('apply-filters-btn'),
     resetFiltersBtn: document.getElementById('reset-filters-btn'),
 
@@ -81,10 +83,33 @@ const elements = {
 };
 
 /**
+ * Fetch distinct route names from /api/customer-routes and populate the dropdown.
+ */
+async function loadRoutes() {
+    try {
+        const res = await fetch(`${API_BASE_URL}/customer-routes`);
+        if (!res.ok) return;
+        const data = await res.json();
+        // data.routes is { customer_name: route_name, ... } — extract distinct route names
+        const distinct = [...new Set(Object.values(data.routes))].sort();
+        elements.routeFilter.innerHTML = '<option value="">All Routes</option>';
+        distinct.forEach(r => {
+            const opt = document.createElement('option');
+            opt.value = r;
+            opt.textContent = r;
+            elements.routeFilter.appendChild(opt);
+        });
+    } catch (e) {
+        console.warn('Could not load routes:', e);
+    }
+}
+
+/**
  * Initialize the application
  */
 function init() {
     setupEventListeners();
+    loadRoutes();
     loadInitialData();
 
     // Close dropdown when clicking outside
@@ -106,6 +131,13 @@ function setupEventListeners() {
     // Filter type toggle
     elements.filterTypeInputs.forEach(input => {
         input.addEventListener('change', handleFilterTypeChange);
+    });
+
+    // Route filter — immediate reload on selection
+    elements.routeFilter.addEventListener('change', () => {
+        currentState.route = elements.routeFilter.value;
+        currentState.offset = 0;
+        loadData();
     });
 
     // Search with debouncing
@@ -162,6 +194,7 @@ function exportToExcel() {
         'Order #': invoice.order_number,
         'Manifest #': invoice.manifest_number,
         'Customer Name': invoice.customer_name,
+        'Route': invoice.route_name || '',
         'Invoice Date': formatDate(invoice.invoice_date),
         'Date Dispatched': formatDate(invoice.date_dispatched),
         'Driver Name': invoice.driver,
@@ -218,7 +251,7 @@ function exportToPDF() {
 
     // Table Columns
     const tableColumn = [
-        "Invoice", "Order", "Manifest", "Customer",
+        "Invoice", "Order", "Manifest", "Customer", "Route",
         "Dispatched", "Driver", "Truck", "Checker"
     ];
 
@@ -228,6 +261,7 @@ function exportToPDF() {
         invoice.order_number || '',
         invoice.manifest_number || '',
         invoice.customer_name || '',
+        invoice.route_name || '',
         formatDate(invoice.date_dispatched),
         invoice.driver || '',
         invoice.reg_number || '',
@@ -372,10 +406,12 @@ function resetFilters() {
     elements.dateTo.value = '';
     elements.searchInput.value = '';
     elements.clearSearchBtn.classList.add('hidden');
+    elements.routeFilter.value = '';
 
     currentState.dateFrom = null;
     currentState.dateTo = null;
     currentState.search = '';
+    currentState.route = '';
     currentState.offset = 0;
     currentState.sortBy = 'date_dispatched';
     currentState.sortOrder = 'DESC';
@@ -493,6 +529,7 @@ async function loadData() {
         if (currentState.dateFrom) params.append('date_from', currentState.dateFrom);
         if (currentState.dateTo) params.append('date_to', currentState.dateTo);
         if (currentState.search) params.append('search', currentState.search);
+        if (currentState.route) params.append('route', currentState.route);
         params.append('filter_type', currentState.filterType);  // NEW
         params.append('limit', currentState.limit);
         params.append('offset', currentState.offset);
@@ -581,6 +618,7 @@ function renderTable(invoices) {
             <td>${escapeHtml(invoice.order_number || 'N/A')}</td>
             <td>${escapeHtml(invoice.manifest_number || 'N/A')}</td>
             <td>${escapeHtml(invoice.customer_name || 'N/A')}</td>
+            <td>${escapeHtml(invoice.route_name || '—')}</td>
             <td>${formatDate(invoice.invoice_date)}</td>
             <td>${formatDate(invoice.date_dispatched)}</td>
             <td>${escapeHtml(invoice.driver || 'N/A')}</td>

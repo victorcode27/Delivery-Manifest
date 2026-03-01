@@ -599,6 +599,7 @@ def get_dispatched_invoices(
     date_to:      Optional[str] = None,
     filter_type:  str           = "dispatch",
     search_query: Optional[str] = None,
+    route:        Optional[str] = None,
     limit:        int           = 50,
     offset:       int           = 0,
     sort_by:      str           = "date_dispatched",
@@ -616,9 +617,11 @@ def get_dispatched_invoices(
                 r.checker, r.reg_number,
                 ri.invoice_number, ri.order_number, ri.customer_name,
                 ri.customer_number, ri.invoice_date, ri.area,
-                ri.sku, ri.value, ri.weight
+                ri.sku, ri.value, ri.weight,
+                cr.route_name
             FROM reports r
             INNER JOIN report_items ri ON r.id = ri.report_id
+            LEFT JOIN customer_routes cr ON ri.customer_name = cr.customer_name
         """
         where: list[str] = []
         params: list     = []
@@ -638,6 +641,10 @@ def get_dispatched_invoices(
                 "r.driver LIKE ? OR r.reg_number LIKE ? OR r.checker LIKE ?)"
             )
             params.extend([sp] * 7)
+
+        if route:
+            where.append("cr.route_name = ?")
+            params.append(route)
 
         query = base + (" WHERE " + " AND ".join(where) if where else "")
 
@@ -662,7 +669,7 @@ def get_dispatched_invoices(
             "manifest_number", "date_dispatched", "driver", "assistant",
             "checker", "reg_number", "invoice_number", "order_number",
             "customer_name", "customer_number", "invoice_date", "area",
-            "sku", "value", "weight",
+            "sku", "value", "weight", "route_name",
         ]
         results = [dict(zip(keys, row)) for row in rows]
         return results, total
