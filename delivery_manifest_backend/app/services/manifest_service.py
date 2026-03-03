@@ -482,7 +482,8 @@ def save_report(report_data: Dict) -> int:
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ),
         )
-        report_id = result.inserted_primary_key[0] if getattr(result, "inserted_primary_key", None) else None
+        row = result.fetchone()
+        report_id = row[0] if row else None
 
         # Persist invoice line items
         for inv in report_data.get("invoices", []):

@@ -1481,9 +1481,10 @@ async function generateExcel() {
     uploadManifest(blob, fileName);
 
     // Save report to history (await so staging is cleared before we refresh)
+    const manifestNum = formInputs.manifestNumber.value || 'UNKNOWN';
     await saveReport({
         date: formInputs.date.value,
-        manifestNumber: formInputs.manifestNumber.value || 'UNKNOWN',
+        manifestNumber: manifestNum,
         regNumber: formInputs.regNumber.value,
         driver: formInputs.driver.value,
         assistant: formInputs.assistant.value,
@@ -1501,10 +1502,12 @@ async function generateExcel() {
         referenceId: Date.now()
     });
 
-    // Mark the current manifest number as used so the next one will be sequential
-    markManifestNumberAsUsed(formInputs.manifestNumber.value);
-
-    // Clear manifest for next one (after report save has cleared staging)
+    // Always clear manifest for next one, even if report save had issues
+    try {
+        markManifestNumberAsUsed(manifestNum);
+    } catch (e) {
+        console.warn('Could not mark manifest number as used:', e);
+    }
     formInputs.manifestNumber.value = getNextManifestNumber();
     orders = [];
     setDefaultDate();
