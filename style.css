@@ -1325,6 +1325,237 @@ input.auto-generated:focus {
     animation: spin 1s linear infinite;
 }
 
+/* ── Users Management ─────────────────────────────────────────────────────── */
+
+/* User card in list */
+.user-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background-color: var(--bg-color);
+    border-radius: 0.5rem;
+    transition: background-color 0.2s;
+}
+
+.user-card:hover {
+    background-color: #e2e8f0;
+}
+
+.user-card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.user-card-name {
+    font-weight: 600;
+    color: var(--text-dark);
+    font-size: 0.95rem;
+}
+
+.user-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.user-card-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+/* Role badges */
+.role-badge {
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.role-badge.full-access {
+    background-color: #dcfce7;
+    color: #166534;
+}
+
+.role-badge.reports-only {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+/* Status badges */
+.status-badge {
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
+.status-badge.active {
+    background-color: #dcfce7;
+    color: #166534;
+}
+
+.status-badge.inactive {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+/* Self indicator */
+.self-badge {
+    background-color: #e0f2fe;
+    color: #0369a1;
+    padding: 0.2rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.65rem;
+    font-weight: 600;
+}
+
+/* User form in tab */
+.user-add-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    padding-bottom: 1rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.user-add-form .form-group-full {
+    grid-column: 1 / -1;
+}
+
+/* Password strength indicator */
+.password-strength {
+    display: flex;
+    gap: 0.25rem;
+    margin-top: 0.25rem;
+}
+
+.password-strength .bar {
+    flex: 1;
+    height: 3px;
+    background-color: var(--border-color);
+    border-radius: 2px;
+    transition: background-color 0.3s;
+}
+
+.password-strength .bar.weak { background-color: #dc2626; }
+.password-strength .bar.medium { background-color: #f59e0b; }
+.password-strength .bar.strong { background-color: #059669; }
+
+.password-hint {
+    font-size: 0.7rem;
+    color: var(--text-light);
+    margin-top: 0.2rem;
+}
+
+.password-hint.error {
+    color: var(--danger-color);
+}
+
+/* Sub-modal for password reset */
+.sub-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.4);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1100;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s;
+}
+
+.sub-modal-overlay.visible {
+    opacity: 1;
+    visibility: visible;
+}
+
+.sub-modal {
+    background-color: white;
+    border-radius: 0.75rem;
+    width: 90%;
+    max-width: 420px;
+    padding: 1.5rem;
+    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1);
+}
+
+.sub-modal h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.sub-modal .form-group {
+    margin-bottom: 0.75rem;
+}
+
+.sub-modal .btn-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+/* Toggle switch for active/inactive */
+.toggle-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    cursor: pointer;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #cbd5e1;
+    border-radius: 20px;
+    transition: 0.3s;
+}
+
+.toggle-slider:before {
+    content: "";
+    position: absolute;
+    height: 16px;
+    width: 16px;
+    left: 2px;
+    bottom: 2px;
+    background-color: white;
+    border-radius: 50%;
+    transition: 0.3s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background-color: var(--success-color);
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(16px);
+}
+
 /* Print Preview Styles */
 .printable-sheet {
     background: white;

@@ -5,14 +5,14 @@ FastAPI dependency helpers for JWT authentication.
 
 Usage in a route::
 
-    from app.core.deps import get_current_user, require_admin
+    from app.core.deps import get_current_user, require_full_access
 
     @router.get("/protected")
     def protected(user: dict = Depends(get_current_user)):
         return {"hello": user["username"]}
 
-    @router.delete("/admin-only")
-    def admin_only(user: dict = Depends(require_admin)):
+    @router.get("/admin-only")
+    def admin_only(user: dict = Depends(require_full_access)):
         ...
 """
 
@@ -37,7 +37,7 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     Raises:
         401 – token missing, invalid, or expired
         401 – username claim not found in DB
-        403 – account is inactive (``is_active`` == False)
+        403 – account is inactive
     """
     credentials_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -81,21 +81,27 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     return user
 
 
-def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+def require_full_access(current_user: dict = Depends(get_current_user)) -> dict:
     """
-    Extend ``get_current_user`` — raises 403 if the caller is not an admin.
+    Extend ``get_current_user`` — raises 403 if the caller does not have
+    FULL_ACCESS role.
 
     Checks the new ``role`` column first; falls back to the legacy
-    ``is_admin`` integer column so both old and new rows are handled.
+    ``is_admin`` integer column so both old and new rows are handled
+    during migration.
     """
-    is_admin = (
-        current_user.get("role") == "admin"
+    has_access = (
+        current_user.get("role") == "FULL_ACCESS"
         or bool(current_user.get("is_admin", 0))
     )
-    if not is_admin:
-        logger.warning(f"Admin access denied for user '{current_user.get('username')}'")
+    if not has_access:
+        logger.warning(f"Full access denied for user '{current_user.get('username')}'")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
+            detail="Full access required",
         )
     return current_user
+
+
+# Backward-compatible alias — existing code may reference require_admin
+require_admin = require_full_access

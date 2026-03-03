@@ -203,9 +203,14 @@ def _create_tables(db) -> None:
             id            SERIAL PRIMARY KEY,
             username      TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'FULL_ACCESS'
+                          CHECK (role IN ('FULL_ACCESS', 'REPORTS_ONLY')),
+            is_active     BOOLEAN DEFAULT TRUE,
+            created_at    TIMESTAMPTZ DEFAULT NOW(),
+            updated_at    TIMESTAMPTZ DEFAULT NOW(),
+            -- Legacy columns (preserved for rollback, unused by new code)
             is_admin      INTEGER DEFAULT 0,
-            can_manifest  INTEGER DEFAULT 1,
-            created_at    TEXT
+            can_manifest  INTEGER DEFAULT 1
         )
         """,
         # ── reports ───────────────────────────────────────────────────────────
@@ -349,7 +354,9 @@ def _run_migrations(db) -> None:
         ("report_items", "customer_number", "ALTER TABLE report_items ADD COLUMN customer_number TEXT DEFAULT 'N/A'"),
         # User model v2 — is_active / role replace is_admin / can_manifest flags
         ("users", "is_active", "ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE"),
-        ("users", "role",      "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"),
+        ("users", "role",      "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'FULL_ACCESS'"),
+        # User model v3 — updated_at timestamp
+        ("users", "updated_at", "ALTER TABLE users ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW()"),
     ]
     for table, column, sql in migrations:
         try:
@@ -358,6 +365,9 @@ def _run_migrations(db) -> None:
                 logger.info(f"Migration applied: {sql}")
         except Exception as exc:
             logger.warning(f"Migration warning ({table}.{column}): {exc}")
+
+    # ── Data migration: convert legacy flags → role enum ──────────────────
+    _migrate_user_roles(db)
 
 
 def _create_indexes(db) -> None:
@@ -414,20 +424,52 @@ def _create_indexes(db) -> None:
             logger.warning(f"Index creation skipped ({name}): {exc}")
 
 
+def _migrate_user_roles(db) -> None:
+    """
+    One-time data migration: convert legacy ``is_admin`` / ``can_manifest``
+    integer flags into the new ``role`` enum (``FULL_ACCESS`` | ``REPORTS_ONLY``).
+
+    Mapping:
+      • is_admin = 1                         → FULL_ACCESS
+      • is_admin = 0  AND  can_manifest = 0  → REPORTS_ONLY
+      • is_admin = 0  AND  can_manifest = 1  → FULL_ACCESS
+      • Anything else / NULL                 → FULL_ACCESS
+
+    This runs on every startup but only changes rows still set to the
+    legacy default (``'user'``), so it is safe to re-run.
+    """
+    try:
+        # Only touch rows that still have legacy role values
+        if not _column_exists(db, "users", "can_manifest"):
+            return  # fresh install — no legacy data to migrate
+
+        db.execute(text(
+            "UPDATE users SET role = 'REPORTS_ONLY' "
+            "WHERE role NOT IN ('FULL_ACCESS', 'REPORTS_ONLY') "
+            "AND COALESCE(can_manifest, 1) = 0 "
+            "AND COALESCE(is_admin, 0) = 0"
+        ))
+        db.execute(text(
+            "UPDATE users SET role = 'FULL_ACCESS' "
+            "WHERE role NOT IN ('FULL_ACCESS', 'REPORTS_ONLY')"
+        ))
+        logger.info("User role data migration completed.")
+    except Exception as exc:
+        logger.warning(f"User role migration warning: {exc}")
+
+
 def _seed_admin(db) -> None:
-    """Create the default admin/admin user if no users exist."""
+    """Create the default admin user if no users exist."""
     from delivery_manifest_backend.app.core.security import hash_password
-    from datetime import datetime
 
     result = db.execute(text("SELECT COUNT(*) FROM users"))
     if result.scalar() == 0:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         db.execute(
             text(
-                "INSERT INTO users (username, password_hash, is_admin, can_manifest, created_at) "
-                "VALUES (:u, :p, :a, :c, :n)"
+                "INSERT INTO users (username, password_hash, role, is_active, is_admin, can_manifest, created_at) "
+                "VALUES (:u, :p, 'FULL_ACCESS', TRUE, 1, 1, NOW())"
             ),
-            {"u": "admin", "p": hash_password("admin"), "a": 1, "c": 1, "n": now},
+            {"u": "admin", "p": hash_password("admin")},
         )
         db.commit()
         logger.info("Default admin user created (admin / admin).")

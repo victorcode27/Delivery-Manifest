@@ -3,19 +3,44 @@ let orders = [];
 let reports = [];
 let availableInvoices = []; // Invoices loaded from API
 let currentUser = null;
-let currentUserRole = null; // Fix: Define currentUserRole
+let currentUserId = null;
+let currentUserRole = null; // 'FULL_ACCESS' or 'REPORTS_ONLY'
+let accessToken = null;     // JWT token from login
 let users = [];
 let loginIntent = null; // 'manifest' or 'report'
 let currentReportView = 'dispatched'; // 'dispatched' or 'outstanding'
 
+// Role constants
+const ROLE_FULL_ACCESS = 'FULL_ACCESS';
+const ROLE_REPORTS_ONLY = 'REPORTS_ONLY';
 
 // API Configuration
 // Use relative paths so fetch() calls work on any host/port (local or Render production).
-// "\'"' means all requests go to the same origin serving this page.
 const API_URL = '/api';
 
 // Safety check: Log resolved origin on startup
 console.log(`[API Config] Using relative API paths. Page origin: ${window.location.origin}`);
+
+/**
+ * Authenticated fetch wrapper — attaches JWT Bearer token automatically.
+ * Falls back to X-Username header when no token is available (local dev).
+ */
+async function apiFetch(url, options = {}) {
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    if (accessToken) {
+        headers['Authorization'] = `Bearer ${accessToken}`;
+    } else {
+        headers['X-Username'] = currentUser || 'anonymous';
+    }
+    const response = await fetch(url, { ...options, headers });
+    // Auto-logout on 401 (expired/invalid token)
+    if (response.status === 401 && accessToken) {
+        console.warn('[apiFetch] 401 — token expired, logging out.');
+        handleLogout();
+        return response;
+    }
+    return response;
+}
 
 // Error Logger for UI
 function logError(msg) {
@@ -903,8 +928,8 @@ function hideReports() {
     modal.classList.remove('visible');
     modal.classList.add('hidden');
 
-    // If guest, return to landing page
-    if (currentUserRole === 'guest') {
+    // If not logged in, return to landing page
+    if (!currentUser) {
         showLandingPage();
     }
 }
@@ -3096,20 +3121,24 @@ async function handleLogin() {
         const data = await response.json();
         console.log('[Login] Login successful. User data received:', data.user);
 
+        // Store JWT token
+        accessToken = data.access_token || null;
+
         const user = {
+            id: data.user.id,
             username: data.user.username,
-            isAdmin: data.user.isAdmin,
-            canManifest: data.user.canManifest
+            role: data.user.role || ROLE_FULL_ACCESS,
+            isActive: data.user.isActive !== false,
         };
 
         // Check permissions based on what the user intends to do
         if (loginIntent === 'manifest') {
-            if (user.canManifest || user.isAdmin) {
-                console.log('[Login] Manifest access granted.');
+            if (user.role === ROLE_FULL_ACCESS) {
+                console.log('[Login] Manifest access granted (FULL_ACCESS).');
                 finalizeLogin(user);
             } else {
-                console.warn('[Login] User lacks manifest permission.');
-                accessError.textContent = 'You do not have permission to access the Manifest system.';
+                console.warn('[Login] User lacks manifest permission (role=' + user.role + ').');
+                accessError.textContent = 'You do not have permission to access the Manifest system. Reports Only access.';
                 accessError.classList.remove('hidden');
                 loginError.classList.add('hidden');
             }
@@ -3131,13 +3160,9 @@ async function handleLogin() {
 }
 
 async function finalizeLogin(user) {
-    currentUser = user.username;  // FIX: Store username string, not object
-    // Derive role from user object
-    if (user.isAdmin) {
-        currentUserRole = 'admin';
-    } else {
-        currentUserRole = 'user'; // default
-    }
+    currentUser = user.username;
+    currentUserId = user.id;
+    currentUserRole = user.role || ROLE_FULL_ACCESS;
 
 
     // Explicitly re-initialize the main form data
@@ -3169,13 +3194,10 @@ async function finalizeLogin(user) {
 }
 
 function applyPermissions() {
-    // currentUser is now just a string (username), not an object
-    // Use currentUserRole instead
     if (!currentUser) return;
 
     console.log("Applying permissions - User:", currentUser, "Role:", currentUserRole);
 
-    // Elements to toggle
     const formSections = document.querySelectorAll('.form-section');
     const previewSection = document.querySelector('.preview-section');
     const settingsBtn = document.getElementById('settings-btn');
@@ -3187,8 +3209,8 @@ function applyPermissions() {
     if (previewSection) previewSection.classList.remove('guest-hidden');
     if (resetBtn) resetBtn.classList.remove('guest-hidden');
 
-    // Settings Button - Admin only
-    if (currentUserRole === 'admin') {
+    // Settings & Users tab — FULL_ACCESS only
+    if (currentUserRole === ROLE_FULL_ACCESS) {
         if (settingsBtn) settingsBtn.classList.remove('guest-hidden');
         if (usersTabKey) usersTabKey.style.display = 'block';
     } else {
@@ -3197,13 +3219,76 @@ function applyPermissions() {
     }
 }
 
-// User Management Settings UI
+// ── User Management ─────────────────────────────────────────────────────────
+
+// Password validation (mirrors backend: 10+ chars, 1 upper, 1 lower, 1 digit)
+function validatePassword(password) {
+    const errors = [];
+    if (password.length < 10) errors.push('At least 10 characters');
+    if (!/[A-Z]/.test(password)) errors.push('1 uppercase letter');
+    if (!/[a-z]/.test(password)) errors.push('1 lowercase letter');
+    if (!/[0-9]/.test(password)) errors.push('1 digit');
+    return errors;
+}
+
+function updatePasswordStrength(password, strengthEl, hintEl) {
+    const errors = validatePassword(password);
+    const bars = strengthEl.querySelectorAll('.bar');
+    const score = 4 - errors.length; // 0-4
+
+    bars.forEach((bar, i) => {
+        bar.className = 'bar';
+        if (i < score) {
+            bar.classList.add(score <= 1 ? 'weak' : score <= 2 ? 'medium' : 'strong');
+        }
+    });
+
+    if (!password) {
+        hintEl.textContent = '';
+        hintEl.className = 'password-hint';
+    } else if (errors.length > 0) {
+        hintEl.textContent = 'Need: ' + errors.join(', ');
+        hintEl.className = 'password-hint error';
+    } else {
+        hintEl.textContent = 'Strong password';
+        hintEl.className = 'password-hint';
+    }
+    return errors;
+}
+
+// Wire password strength indicators
+document.addEventListener('DOMContentLoaded', () => {
+    const newPwInput = document.getElementById('new-user-password');
+    if (newPwInput) {
+        newPwInput.addEventListener('input', () => {
+            updatePasswordStrength(
+                newPwInput.value,
+                document.getElementById('new-user-pw-strength'),
+                document.getElementById('new-user-pw-hint')
+            );
+        });
+    }
+    const resetPwInput = document.getElementById('reset-pw-input');
+    if (resetPwInput) {
+        resetPwInput.addEventListener('input', () => {
+            updatePasswordStrength(
+                resetPwInput.value,
+                document.getElementById('reset-pw-strength'),
+                document.getElementById('reset-pw-hint')
+            );
+        });
+    }
+});
+
 async function renderUsersList() {
     const list = document.getElementById('users-list');
     list.innerHTML = '<div style="text-align:center; padding:1rem;">Loading users...</div>';
 
     try {
-        const response = await fetch(`${API_URL}/users`);
+        const response = await apiFetch(`${API_URL}/users`);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
         const data = await response.json();
         const apiUsers = data.users || [];
 
@@ -3211,23 +3296,36 @@ async function renderUsersList() {
 
         apiUsers.forEach((user) => {
             const div = document.createElement('div');
-            div.className = 'settings-item';
+            div.className = 'user-card';
 
-            const isSelf = currentUser && currentUser.username === user.username;
-            const deleteBtn = (user.username !== 'admin' && !isSelf)
-                ? `<button class="btn-icon btn-delete" onclick="deleteUser('${user.username}')"><i data-lucide="trash-2"></i></button>`
-                : '';
-
-            const roleBadge = user.is_admin ? '<span class="badge" style="background:#fef3c7; color:#d97706;">Admin</span>'
-                : (user.can_manifest ? '<span class="badge" style="background:#dcfce7; color:#166534;">Manifest</span>' : '<span class="badge">View Only</span>');
+            const isSelf = currentUserId && currentUserId === user.id;
+            const roleBadgeClass = user.role === ROLE_FULL_ACCESS ? 'full-access' : 'reports-only';
+            const roleBadgeText = user.role === ROLE_FULL_ACCESS ? 'Full Access' : 'Reports Only';
+            const statusClass = user.is_active ? 'active' : 'inactive';
+            const statusText = user.is_active ? 'Active' : 'Inactive';
 
             div.innerHTML = `
-                <div class="settings-item-info">
-                    <span class="settings-item-name">${user.username}</span>
-                    <span class="settings-item-details">${roleBadge}</span>
+                <div class="user-card-info">
+                    <span class="user-card-name">${user.username} ${isSelf ? '<span class="self-badge">YOU</span>' : ''}</span>
+                    <div class="user-card-meta">
+                        <span class="role-badge ${roleBadgeClass}">${roleBadgeText}</span>
+                        <span class="status-badge ${statusClass}">${statusText}</span>
+                    </div>
                 </div>
-                <div class="settings-item-actions">
-                    ${deleteBtn}
+                <div class="user-card-actions">
+                    ${!isSelf ? `
+                        <select class="btn-sm" style="font-size:0.75rem; padding:0.3rem 0.4rem;" onchange="handleRoleChange(${user.id}, this.value, this)" title="Change role">
+                            <option value="FULL_ACCESS" ${user.role === 'FULL_ACCESS' ? 'selected' : ''}>Full Access</option>
+                            <option value="REPORTS_ONLY" ${user.role === 'REPORTS_ONLY' ? 'selected' : ''}>Reports Only</option>
+                        </select>
+                        <label class="toggle-switch" title="${user.is_active ? 'Deactivate' : 'Activate'} user">
+                            <input type="checkbox" ${user.is_active ? 'checked' : ''} onchange="handleStatusToggle(${user.id}, this.checked)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    ` : '<span style="font-size:0.75rem; color:var(--text-light);">Cannot edit self</span>'}
+                    <button class="btn-icon" onclick="showPasswordResetModal(${user.id}, '${user.username}')" title="Reset password">
+                        <i data-lucide="key"></i>
+                    </button>
                 </div>
             `;
             list.appendChild(div);
@@ -3242,78 +3340,178 @@ async function renderUsersList() {
 async function addUser() {
     const nameInput = document.getElementById('new-user-name');
     const pwdInput = document.getElementById('new-user-password');
-    const manifestCheck = document.getElementById('new-user-manifest');
+    const roleSelect = document.getElementById('new-user-role');
     const addBtn = document.getElementById('add-user-btn');
 
     const username = nameInput.value.trim();
     const password = pwdInput.value.trim();
+    const role = roleSelect.value;
 
     if (!username || !password) {
         alert('Username and Password are required');
         return;
     }
 
+    const pwErrors = validatePassword(password);
+    if (pwErrors.length > 0) {
+        alert('Password does not meet requirements:\n• ' + pwErrors.join('\n• '));
+        return;
+    }
+
     addBtn.disabled = true;
-    addBtn.textContent = 'Adding...';
+    addBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Adding...';
+    lucide.createIcons();
 
     try {
-        const response = await fetch(`${API_URL}/users`, {
+        const response = await apiFetch(`${API_URL}/users`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                username: username,
-                password: password,
-                is_admin: false,
-                can_manifest: manifestCheck.checked
-            })
+            body: JSON.stringify({ username, password, role, is_active: true })
         });
 
         if (!response.ok) {
-            const error = await response.json();
-            alert(error.detail || 'Failed to create user');
+            const err = await response.json();
+            alert(err.detail || 'Failed to create user');
             return;
         }
 
         await renderUsersList();
-
         nameInput.value = '';
         pwdInput.value = '';
-        manifestCheck.checked = false;
+        roleSelect.value = ROLE_FULL_ACCESS;
+        // Reset strength indicator
+        updatePasswordStrength('', document.getElementById('new-user-pw-strength'), document.getElementById('new-user-pw-hint'));
     } catch (error) {
         console.error('Failed to add user:', error);
         alert('Failed to add user. Please check the server.');
     } finally {
         addBtn.disabled = false;
-        addBtn.textContent = 'Add User';
+        addBtn.innerHTML = '<i data-lucide="user-plus"></i> Add User';
+        lucide.createIcons();
     }
 }
 
-async function deleteUser(username) {
-    if (confirm(`Are you sure you want to delete user "${username}"?`)) {
-        try {
-            const response = await fetch(`${API_URL}/users/${username}`, {
-                method: 'DELETE'
-            });
+async function handleRoleChange(userId, newRole, selectEl) {
+    try {
+        const response = await apiFetch(`${API_URL}/users/${userId}/role`, {
+            method: 'PUT',
+            body: JSON.stringify({ role: newRole })
+        });
 
-            if (!response.ok) {
-                alert('Failed to delete user');
-                return;
-            }
-
-            await renderUsersList();
-        } catch (error) {
-            console.error('Failed to delete user:', error);
-            alert('Failed to delete user. Please check the server.');
+        if (!response.ok) {
+            const err = await response.json();
+            alert(err.detail || 'Failed to update role');
+            await renderUsersList(); // revert UI
+            return;
         }
+        await renderUsersList();
+    } catch (error) {
+        console.error('Failed to update role:', error);
+        alert('Failed to update role.');
+        await renderUsersList();
     }
 }
 
-// Expose deleteUser globally
-window.deleteUser = deleteUser;
+async function handleStatusToggle(userId, isActive) {
+    try {
+        const response = await apiFetch(`${API_URL}/users/${userId}/status`, {
+            method: 'PUT',
+            body: JSON.stringify({ is_active: isActive })
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            alert(err.detail || 'Failed to update status');
+            await renderUsersList(); // revert UI
+            return;
+        }
+        await renderUsersList();
+    } catch (error) {
+        console.error('Failed to update status:', error);
+        alert('Failed to update status.');
+        await renderUsersList();
+    }
+}
+
+// Password Reset Sub-Modal
+let resetPasswordUserId = null;
+
+function showPasswordResetModal(userId, username) {
+    resetPasswordUserId = userId;
+    document.getElementById('reset-pw-username').textContent = username;
+    document.getElementById('reset-pw-input').value = '';
+    document.getElementById('reset-pw-confirm').value = '';
+    updatePasswordStrength('', document.getElementById('reset-pw-strength'), document.getElementById('reset-pw-hint'));
+    document.getElementById('password-reset-modal').classList.add('visible');
+    lucide.createIcons();
+}
+
+function hidePasswordResetModal() {
+    resetPasswordUserId = null;
+    document.getElementById('password-reset-modal').classList.remove('visible');
+}
+
+async function submitPasswordReset() {
+    const password = document.getElementById('reset-pw-input').value;
+    const confirm = document.getElementById('reset-pw-confirm').value;
+    const btn = document.getElementById('reset-pw-submit-btn');
+
+    if (!password) {
+        alert('Please enter a new password.');
+        return;
+    }
+
+    if (password !== confirm) {
+        alert('Passwords do not match.');
+        return;
+    }
+
+    const pwErrors = validatePassword(password);
+    if (pwErrors.length > 0) {
+        alert('Password does not meet requirements:\n• ' + pwErrors.join('\n• '));
+        return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Resetting...';
+    lucide.createIcons();
+
+    try {
+        const response = await apiFetch(`${API_URL}/users/${resetPasswordUserId}/password`, {
+            method: 'PUT',
+            body: JSON.stringify({ password })
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            alert(err.detail || 'Failed to reset password');
+            return;
+        }
+
+        alert('Password reset successfully.');
+        hidePasswordResetModal();
+    } catch (error) {
+        console.error('Failed to reset password:', error);
+        alert('Failed to reset password.');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i data-lucide="check"></i> Reset Password';
+        lucide.createIcons();
+    }
+}
+
+// Expose user management functions globally (used in onclick handlers)
+window.handleRoleChange = handleRoleChange;
+window.handleStatusToggle = handleStatusToggle;
+window.showPasswordResetModal = showPasswordResetModal;
+window.hidePasswordResetModal = hidePasswordResetModal;
+window.submitPasswordReset = submitPasswordReset;
 
 // Logout Function
 function handleLogout() {
     currentUser = null;
+    currentUserId = null;
+    currentUserRole = null;
+    accessToken = null;
     loginIntent = null;
 
     // Hide any open modals

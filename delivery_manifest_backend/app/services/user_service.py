@@ -2,143 +2,183 @@
 app/services/user_service.py
 
 Business logic for user management.
-All direct database interaction (session open/close, SQL) lives here.
-Routes call these functions and only deal with HTTP concerns.
+
+All functions receive a SQLAlchemy ``Session`` from the route layer (via
+``Depends(get_db)``).  No manual session open/close here.
+
+Security rules enforced:
+  • Password strength validated before hashing
+  • Self-lockout prevention (cannot change own role / status)
+  • Role values constrained to FULL_ACCESS | REPORTS_ONLY
 """
 
-from datetime import datetime
 from typing import Dict, List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from delivery_manifest_backend.app.core.logger import get_logger
-from delivery_manifest_backend.app.core.security import hash_password, verify_password
-from delivery_manifest_backend.app.db.database import get_db_session, execute_query
+from delivery_manifest_backend.app.core.security import (
+    hash_password,
+    validate_password_strength,
+    verify_password,
+)
+from delivery_manifest_backend.app.models.user import User
 
 logger = get_logger(__name__)
+
+VALID_ROLES = ("FULL_ACCESS", "REPORTS_ONLY")
 
 
 # ── Read ──────────────────────────────────────────────────────────────────────
 
-def get_user(username: str) -> Optional[Dict]:
-    """Return a user dict (including password_hash) or None."""
-    db = get_db_session()
-    try:
-        result = execute_query(db, "SELECT * FROM users WHERE username = ?", (username,))
-        row = result.fetchone()
-        return dict(row._mapping) if row else None
-    finally:
-        db.close()
-
-
-def get_all_users() -> List[Dict]:
+def get_all_users(db: Session) -> List[Dict]:
     """Return all users without their password hashes."""
-    db = get_db_session()
-    try:
-        result = execute_query(
-            db,
-            "SELECT id, username, is_admin, can_manifest, created_at FROM users",
-        )
-        return [dict(row._mapping) for row in result.fetchall()]
-    finally:
-        db.close()
+    users = db.query(User).order_by(User.id).all()
+    return [u.to_dict() for u in users]
+
+
+def get_user_by_id(db: Session, user_id: int) -> Optional[User]:
+    """Return a User ORM instance or None."""
+    return db.query(User).filter(User.id == user_id).first()
+
+
+def get_user_by_username(db: Session, username: str) -> Optional[User]:
+    """Return a User ORM instance or None."""
+    return db.query(User).filter(User.username == username).first()
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
-def verify_user(username: str, password: str) -> Optional[Dict]:
+def verify_user(db: Session, username: str, password: str) -> Optional[User]:
     """
-    Verify credentials.  Returns the user dict on success, None on failure.
+    Verify credentials.  Returns the User on success, None on failure.
     """
-    user = get_user(username)
-    if user and verify_password(password, user["password_hash"]):
+    user = get_user_by_username(db, username)
+    if user and verify_password(password, user.hashed_password):
         return user
     return None
 
 
-# ── Create / Update / Delete ──────────────────────────────────────────────────
+# ── Create ────────────────────────────────────────────────────────────────────
 
 def create_user(
+    db: Session,
     username: str,
     password: str,
-    is_admin: bool = False,
-    can_manifest: bool = True,
-) -> bool:
+    role: str = "FULL_ACCESS",
+    is_active: bool = True,
+) -> User:
     """
-    Insert a new user.  Returns True on success, False if username is taken.
+    Insert a new user.
+
+    Raises:
+        ValueError  – username taken or invalid role or weak password
     """
-    db = get_db_session()
+    # Password policy (also validated by schema, but belt-and-braces)
+    pw_errors = validate_password_strength(password)
+    if pw_errors:
+        raise ValueError("; ".join(pw_errors))
+
+    if role not in VALID_ROLES:
+        raise ValueError(f"Invalid role: {role}")
+
+    user = User(
+        username=username,
+        hashed_password=hash_password(password),
+        role=role,
+        is_active=is_active,
+    )
+    db.add(user)
     try:
-        execute_query(
-            db,
-            """
-            INSERT INTO users (username, password_hash, is_admin, can_manifest, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                username,
-                hash_password(password),
-                1 if is_admin else 0,
-                1 if can_manifest else 0,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            ),
-        )
         db.commit()
-        return True
+        db.refresh(user)
     except IntegrityError:
-        logger.warning(f"Duplicate username attempted: '{username}'")
-        return False
-    finally:
-        db.close()
+        db.rollback()
+        raise ValueError(f"Username '{username}' already exists")
+    logger.info(f"Created user '{username}' with role '{role}'")
+    return user
 
 
-def update_user(
-    username: str,
-    password: Optional[str] = None,
-    is_admin: Optional[bool] = None,
-    can_manifest: Optional[bool] = None,
-) -> bool:
+# ── Password Reset ────────────────────────────────────────────────────────────
+
+def reset_password(db: Session, user_id: int, new_password: str) -> User:
     """
-    Update one or more user fields.  Returns True if a row was modified.
+    Reset a user's password.
+
+    Raises:
+        ValueError – user not found or weak password
     """
-    updates: list[str] = []
-    params:  list      = []
+    pw_errors = validate_password_strength(new_password)
+    if pw_errors:
+        raise ValueError("; ".join(pw_errors))
 
-    if password is not None:
-        updates.append("password_hash = ?")
-        params.append(hash_password(password))
-    if is_admin is not None:
-        updates.append("is_admin = ?")
-        params.append(1 if is_admin else 0)
-    if can_manifest is not None:
-        updates.append("can_manifest = ?")
-        params.append(1 if can_manifest else 0)
+    user = get_user_by_id(db, user_id)
+    if not user:
+        raise ValueError("User not found")
 
-    if not updates:
-        return False
-
-    params.append(username)
-    db = get_db_session()
-    try:
-        result = execute_query(
-            db,
-            f"UPDATE users SET {', '.join(updates)} WHERE username = ?",
-            params,
-        )
-        updated = result.rowcount > 0
-        db.commit()
-        return updated
-    finally:
-        db.close()
+    user.hashed_password = hash_password(new_password)
+    db.commit()
+    db.refresh(user)
+    logger.info(f"Password reset for user '{user.username}'")
+    return user
 
 
-def delete_user(username: str) -> bool:
-    """Delete a user by username.  Returns True if a row was removed."""
-    db = get_db_session()
-    try:
-        result = execute_query(db, "DELETE FROM users WHERE username = ?", (username,))
-        deleted = result.rowcount > 0
-        db.commit()
-        return deleted
-    finally:
-        db.close()
+# ── Role Update ───────────────────────────────────────────────────────────────
+
+def update_role(
+    db: Session,
+    target_id: int,
+    new_role: str,
+    current_user: Optional[dict] = None,
+) -> User:
+    """
+    Change a user's access level.
+
+    Raises:
+        ValueError – user not found, invalid role, or self-lockout attempt
+    """
+    if current_user and current_user.get("id") == target_id:
+        raise ValueError("Cannot change your own role")
+
+    if new_role not in VALID_ROLES:
+        raise ValueError(f"Invalid role: {new_role}")
+
+    user = get_user_by_id(db, target_id)
+    if not user:
+        raise ValueError("User not found")
+
+    user.role = new_role
+    db.commit()
+    db.refresh(user)
+    logger.info(f"Role updated for '{user.username}' → '{new_role}'")
+    return user
+
+
+# ── Status Update ─────────────────────────────────────────────────────────────
+
+def update_status(
+    db: Session,
+    target_id: int,
+    is_active: bool,
+    current_user: Optional[dict] = None,
+) -> User:
+    """
+    Activate or deactivate a user account.
+
+    Raises:
+        ValueError – user not found or self-lockout attempt
+    """
+    if current_user and current_user.get("id") == target_id:
+        raise ValueError("Cannot change your own status")
+
+    user = get_user_by_id(db, target_id)
+    if not user:
+        raise ValueError("User not found")
+
+    user.is_active = is_active
+    db.commit()
+    db.refresh(user)
+    logger.info(f"Status updated for '{user.username}' → active={is_active}")
+    return user

@@ -55,6 +55,33 @@ def verify_password(plain_password: str, stored_hash: str) -> bool:
 hash_password = get_password_hash
 
 
+# ── Password policy ───────────────────────────────────────────────────────
+
+def validate_password_strength(password: str) -> list[str]:
+    """
+    Validate *password* against the system password policy.
+
+    Returns a list of human-readable failure descriptions.
+    An empty list means the password is acceptable.
+
+    Policy:
+      • Minimum 10 characters
+      • At least one uppercase letter
+      • At least one lowercase letter
+      • At least one digit
+    """
+    errors: list[str] = []
+    if len(password) < 10:
+        errors.append("Minimum 10 characters required")
+    if not any(c.isupper() for c in password):
+        errors.append("At least one uppercase letter required")
+    if not any(c.islower() for c in password):
+        errors.append("At least one lowercase letter required")
+    if not any(c.isdigit() for c in password):
+        errors.append("At least one number required")
+    return errors
+
+
 # ── JWT helpers ───────────────────────────────────────────────────────────────
 
 _DEFAULT_EXPIRY = timedelta(hours=8)

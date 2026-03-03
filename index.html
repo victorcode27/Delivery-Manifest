@@ -572,48 +572,83 @@
                     </div>
                 </div>
 
-                <!-- Tab Content: Users (Admin Only) -->
+                <!-- Tab Content: Users (FULL_ACCESS Only) -->
                 <div class="settings-tab-content" id="tab-users">
                     <div class="settings-info-text">
-                        <i data-lucide="info"></i>
-                        <span>Manage application users. Grant 'Manifest' access to allow creating manifests.</span>
-                    </div>
-                    <!-- Added Migration UI here for Admin convenience -->
-                    <div class="settings-group"
-                        style="margin-bottom: 2rem; padding: 1rem; background: #eff6ff; border-radius: 8px; border: 1px solid #dbeafe;">
-                        <h4 style="margin-top: 0; color: #1e40af;">System Data Sync</h4>
-                        <p style="font-size: 0.9em; margin-bottom: 1rem; color: #1e3a8a;">
-                            Upload your local settings and history to the server so other computers can see them.
-                            Running this multiple times is safe (it checks for duplicates).
-                        </p>
-                        <button id="migrate-btn" class="btn btn-primary" onclick="migrateLocalData()"
-                            style="width: 100%;">
-                            <i data-lucide="upload-cloud"></i> Sync Local Data to Server
-                        </button>
-                        <div id="migration-status" style="margin-top: 10px; font-weight: bold; font-size: 0.9em;"></div>
+                        <i data-lucide="shield"></i>
+                        <span>Manage users and access levels. <strong>Full Access</strong> = all features. <strong>Reports Only</strong> = view reports only.</span>
                     </div>
 
-                    <div class="settings-add-form customer-route-form">
-                        <input type="text" id="new-user-name" placeholder="Username" style="flex: 1;">
-                        <input type="text" id="new-user-password" placeholder="Password" style="flex: 1;">
-                        <div style="display: flex; align-items: center; gap: 0.5rem;">
-                            <input type="checkbox" id="new-user-manifest" style="width: auto;">
-                            <label for="new-user-manifest" style="margin-bottom: 0;">Manifest Access</label>
+                    <!-- Add User Form -->
+                    <div class="user-add-form">
+                        <div class="form-group">
+                            <label for="new-user-name">Username</label>
+                            <input type="text" id="new-user-name" placeholder="Enter username" autocomplete="off">
                         </div>
-                        <button id="add-user-btn" class="btn btn-primary">
-                            <i data-lucide="plus"></i> Add User
-                        </button>
+                        <div class="form-group">
+                            <label for="new-user-password">Password</label>
+                            <input type="password" id="new-user-password" placeholder="Min 10 chars, upper+lower+digit" autocomplete="new-password">
+                            <div class="password-strength" id="new-user-pw-strength">
+                                <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                            </div>
+                            <span class="password-hint" id="new-user-pw-hint"></span>
+                        </div>
+                        <div class="form-group">
+                            <label for="new-user-role">Role</label>
+                            <select id="new-user-role">
+                                <option value="FULL_ACCESS">Full Access</option>
+                                <option value="REPORTS_ONLY">Reports Only</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="align-self: end;">
+                            <button id="add-user-btn" class="btn btn-primary full-width">
+                                <i data-lucide="user-plus"></i> Add User
+                            </button>
+                        </div>
                     </div>
+
+                    <!-- Users List -->
                     <div class="settings-list" id="users-list">
-                        <!-- Users will be loaded here -->
+                        <!-- Users will be rendered by JS -->
                     </div>
                 </div>
-            </div>
+
+                <!-- Password Reset Sub-Modal (sits outside settings modal) -->
+                </div><!-- close modal-body -->
             <div class="modal-actions">
                 <span class="settings-hint">Changes are saved automatically</span>
                 <button id="close-settings-btn" class="btn btn-secondary">Close</button>
             </div>
         </div>
+    </div><!-- close settings-modal -->
+
+    <!-- Password Reset Sub-Modal -->
+    <div id="password-reset-modal" class="sub-modal-overlay">
+        <div class="sub-modal">
+            <h3><i data-lucide="key"></i> Reset Password</h3>
+            <p style="font-size: 0.85rem; color: var(--text-light); margin-bottom: 1rem;">
+                Resetting password for <strong id="reset-pw-username"></strong>
+            </p>
+            <div class="form-group">
+                <label for="reset-pw-input">New Password</label>
+                <input type="password" id="reset-pw-input" placeholder="Min 10 chars, upper+lower+digit" autocomplete="new-password">
+                <div class="password-strength" id="reset-pw-strength">
+                    <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                </div>
+                <span class="password-hint" id="reset-pw-hint"></span>
+            </div>
+            <div class="form-group">
+                <label for="reset-pw-confirm">Confirm Password</label>
+                <input type="password" id="reset-pw-confirm" placeholder="Re-enter password">
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-secondary" onclick="hidePasswordResetModal()">Cancel</button>
+                <button class="btn btn-primary" id="reset-pw-submit-btn" onclick="submitPasswordReset()">
+                    <i data-lucide="check"></i> Reset Password
+                </button>
+            </div>
+        </div>
+    </div>
 
         <!-- Manual Entry / Restore Modal -->
         <div id="manual-entry-modal" class="modal hidden">

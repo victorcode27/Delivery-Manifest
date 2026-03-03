@@ -1,18 +1,25 @@
 """
 app/models/user.py
 
-SQLAlchemy ORM model for the `users` table.
+SQLAlchemy ORM model for the ``users`` table.
 
 Column notes
 ------------
-- `hashed_password`  maps to the DB column `password_hash` (legacy name kept
-  so existing rows are not broken; SQLAlchemy `key=` handles the rename).
-- `is_active`        replaces the old `can_manifest` flag — same default (1/True).
-- `role`             replaces the old `is_admin` flag — "admin" | "user".
+- ``hashed_password``  maps to the DB column ``password_hash`` (legacy name kept
+  so existing rows are not broken; SQLAlchemy ``key=`` handles the rename).
+- ``role``             'FULL_ACCESS' | 'REPORTS_ONLY'
+- ``is_active``        account enabled / disabled
+- ``created_at``       TIMESTAMPTZ, set on insert
+- ``updated_at``       TIMESTAMPTZ, set on insert and update
+
+Legacy columns ``is_admin`` and ``can_manifest`` are **not** mapped here.
+They remain in the DB for rollback safety but are unused by new code.
 """
 
-from sqlalchemy import Boolean, Column, Integer, String, Text
+from sqlalchemy import Boolean, Column, Integer, Text
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 
 from delivery_manifest_backend.app.db.database import Base
 
@@ -23,31 +30,30 @@ class User(Base):
     id              = Column(Integer, primary_key=True, index=True)
     username        = Column(Text, unique=True, nullable=False, index=True)
 
-    # DB column is still called `password_hash`; Python attribute is `hashed_password`
+    # DB column is still called ``password_hash``; Python attribute is ``hashed_password``
     hashed_password = Column("password_hash", Text, nullable=False)
 
+    role            = Column(Text, nullable=False, default="FULL_ACCESS")
     is_active       = Column(Boolean, default=True)
-    role            = Column(Text, default="user")   # "admin" | "user"
-    created_at      = Column(Text)
+    created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at      = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
     manifests = relationship("Manifest", back_populates="uploader")
 
     # ── Convenience helpers ───────────────────────────────────────────────────
 
     @property
-    def is_admin(self) -> bool:
-        """Backward-compatible check used by existing service code."""
-        return self.role == "admin"
+    def has_full_access(self) -> bool:
+        """Check whether this user has full system access."""
+        return self.role == "FULL_ACCESS"
 
-    def to_dict(self, include_password: bool = False) -> dict:
-        """Serialise to a plain dict (password hash excluded by default)."""
-        data = {
+    def to_dict(self) -> dict:
+        """Serialise to a plain dict (password hash is **never** included)."""
+        return {
             "id":         self.id,
             "username":   self.username,
-            "is_active":  self.is_active,
             "role":       self.role,
-            "created_at": self.created_at,
+            "is_active":  self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
-        if include_password:
-            data["hashed_password"] = self.hashed_password
-        return data
