@@ -455,35 +455,50 @@ def save_report(report_data: Dict) -> int:
     """Persist a dispatch report and finalise its staged invoices."""
     db = get_db_session()
     try:
-        result = execute_query(
-            db,
-            """
-            INSERT INTO reports
-                (manifest_number, date, date_dispatched, driver, assistant, checker,
-                 reg_number, pallets_brown, pallets_blue, crates, mileage,
-                 total_value, total_sku, total_weight, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                report_data.get("manifestNumber"),
-                report_data.get("date"),
-                report_data.get("date"),
-                report_data.get("driver"),
-                report_data.get("assistant"),
-                report_data.get("checker"),
-                report_data.get("regNumber"),
-                report_data.get("palletsBrown", 0),
-                report_data.get("palletsBlue", 0),
-                report_data.get("crates", 0),
-                report_data.get("mileage", 0),
-                report_data.get("totalValue", 0),
-                report_data.get("totalSku", 0),
-                report_data.get("totalWeight", 0),
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            ),
-        )
-        row = result.fetchone()
-        report_id = row[0] if row else None
+        manifest_number = report_data.get("manifestNumber")
+
+        # Retry with a unique suffix if manifest_number already exists
+        report_id = None
+        for attempt in range(5):
+            try:
+                if attempt > 0:
+                    db.rollback()
+                result = execute_query(
+                    db,
+                    """
+                    INSERT INTO reports
+                        (manifest_number, date, date_dispatched, driver, assistant, checker,
+                         reg_number, pallets_brown, pallets_blue, crates, mileage,
+                         total_value, total_sku, total_weight, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        manifest_number,
+                        report_data.get("date"),
+                        report_data.get("date"),
+                        report_data.get("driver"),
+                        report_data.get("assistant"),
+                        report_data.get("checker"),
+                        report_data.get("regNumber"),
+                        report_data.get("palletsBrown", 0),
+                        report_data.get("palletsBlue", 0),
+                        report_data.get("crates", 0),
+                        report_data.get("mileage", 0),
+                        report_data.get("totalValue", 0),
+                        report_data.get("totalSku", 0),
+                        report_data.get("totalWeight", 0),
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    ),
+                )
+                row = result.fetchone()
+                report_id = row[0] if row else None
+                break  # success
+            except IntegrityError:
+                # Duplicate manifest_number — generate a unique alternative
+                manifest_number = f"{report_data.get('manifestNumber')}-{attempt + 1}"
+
+        if report_id is None:
+            raise RuntimeError(f"Failed to insert report after retries (manifest: {manifest_number})")
 
         # Persist invoice line items
         for inv in report_data.get("invoices", []):
@@ -533,7 +548,7 @@ def save_report(report_data: Dict) -> int:
                     SET is_allocated = 1, allocated_date = ?, manifest_number = ?
                     WHERE filename IN ({ph})
                     """,
-                    [allocated_date, report_data.get("manifestNumber")] + staged_filenames,
+                    [allocated_date, manifest_number] + staged_filenames,
                 )
 
             execute_query(
@@ -545,7 +560,7 @@ def save_report(report_data: Dict) -> int:
         db.commit()
 
         # Audit log (outside the main transaction)
-        log_manifest_event(report_data.get("manifestNumber"), "CREATED", "System")
+        log_manifest_event(manifest_number, "CREATED", "System")
         return report_id
     finally:
         db.close()

@@ -886,11 +886,14 @@ async function saveReport(manifestData) {
             if (!document.getElementById('reports-modal').classList.contains('hidden')) {
                 renderReports();
             }
+            return true;
         } else {
-            console.error("Failed to save report to database");
+            console.error("Failed to save report to database:", response.status);
+            return false;
         }
     } catch (e) {
         console.error("Error saving report:", e);
+        return false;
     }
 }
 
@@ -1482,7 +1485,7 @@ async function generateExcel() {
 
     // Save report to history (await so staging is cleared before we refresh)
     const manifestNum = formInputs.manifestNumber.value || 'UNKNOWN';
-    await saveReport({
+    const reportSaved = await saveReport({
         date: formInputs.date.value,
         manifestNumber: manifestNum,
         regNumber: formInputs.regNumber.value,
@@ -1502,7 +1505,13 @@ async function generateExcel() {
         referenceId: Date.now()
     });
 
-    // Always clear manifest for next one, even if report save had issues
+    if (!reportSaved) {
+        alert('Warning: Report could not be saved to the database. Your Excel was downloaded but the manifest was not finalized. Please try processing again.');
+        await renderTable();
+        return;
+    }
+
+    // Clear manifest for next one — only after confirmed successful save
     try {
         markManifestNumberAsUsed(manifestNum);
     } catch (e) {
