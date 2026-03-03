@@ -706,13 +706,9 @@ async function removeOrder(id) {
 
         // Call API to remove from staging
         try {
-            const response = await fetch(`${API_URL}/manifest/remove`, {
+            const response = await apiFetch(`${API_URL}/manifest/remove`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Username': currentUser || 'anonymous'
-                },
-                body: JSON.stringify({ filenames: [order.invoice] })
+                body: JSON.stringify({ filenames: [order.filename || order.invoice] })
             });
 
             if (!response.ok) {
@@ -842,13 +838,7 @@ async function loadCurrentManifestFromAPI() {
     orders = [];
 
     try {
-        const response = await fetch(`${API_URL}/manifest/current`, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Username': currentUser || 'anonymous'
-            }
-        });
+        const response = await apiFetch(`${API_URL}/manifest/current`);
 
         if (!response.ok) {
             console.warn('Could not load current manifest from API');
@@ -862,6 +852,7 @@ async function loadCurrentManifestFromAPI() {
         // Convert API invoice format to local orders format
         orders = invoices.map(inv => ({
             id: inv.id || Date.now() + Math.random(),
+            filename: inv.filename,  // preserve DB filename for staging API calls
             invoice: inv.invoice_number || inv.filename,
             orderNumber: inv.order_number || '',
             customerNumber: inv.customer_number || 'N/A',
@@ -884,9 +875,8 @@ async function loadCurrentManifestFromAPI() {
 
 async function saveReport(manifestData) {
     try {
-        const response = await fetch(`${API_URL}/reports`, {
+        const response = await apiFetch(`${API_URL}/reports`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(manifestData)
         });
 
@@ -1385,10 +1375,10 @@ function hidePreviewModal() {
     modal.classList.add('hidden');
 }
 
-function confirmAndPrint() {
+async function confirmAndPrint() {
     window.print();
     hidePreviewModal();
-    generateExcel();
+    await generateExcel();
 }
 
 // Excel Generation
@@ -1479,31 +1469,7 @@ async function generateExcel() {
         cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
     });
 
-    // Save report to history
-    saveReport({
-        date: formInputs.date.value,
-        manifestNumber: formInputs.manifestNumber.value || 'UNKNOWN', // Ensure not empty
-        regNumber: formInputs.regNumber.value, // FIXED: Changed from truckReg to regNumber to match API
-        driver: formInputs.driver.value,
-        assistant: formInputs.assistant.value,
-        checker: formInputs.checker.value,
-        route: '',
-        totalSku: orders.reduce((sum, o) => sum + o.sku, 0),
-        invoices: orders.map(o => ({
-            num: o.invoice,
-            orderNum: o.orderNumber, // Added Order Number
-            invoiceDate: o.invoiceDate, // Added Invoice Date
-            customerNumber: o.customerNumber || 'N/A', // Added Customer Number
-            val: o.value,
-            customer: o.customer
-        })),
-        referenceId: Date.now()
-    });
-
-    // Mark the current manifest number as used so the next one will be sequential
-    markManifestNumberAsUsed(formInputs.manifestNumber.value);
-
-    // Write Buffer
+    // Write Buffer (do this before the async report save so the download starts immediately)
     const buffer = await workbook.xlsx.writeBuffer();
     const fileName = `Manifest_${formInputs.manifestNumber.value || 'Route'}.xlsx`;
 
@@ -1514,12 +1480,36 @@ async function generateExcel() {
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     uploadManifest(blob, fileName);
 
-    // After printing, generate a new manifest number for the next manifest
+    // Save report to history (await so staging is cleared before we refresh)
+    await saveReport({
+        date: formInputs.date.value,
+        manifestNumber: formInputs.manifestNumber.value || 'UNKNOWN',
+        regNumber: formInputs.regNumber.value,
+        driver: formInputs.driver.value,
+        assistant: formInputs.assistant.value,
+        checker: formInputs.checker.value,
+        route: '',
+        totalSku: orders.reduce((sum, o) => sum + o.sku, 0),
+        invoices: orders.map(o => ({
+            num: o.invoice,
+            orderNum: o.orderNumber,
+            invoiceDate: o.invoiceDate,
+            customerNumber: o.customerNumber || 'N/A',
+            val: o.value,
+            customer: o.customer
+        })),
+        referenceId: Date.now()
+    });
+
+    // Mark the current manifest number as used so the next one will be sequential
+    markManifestNumberAsUsed(formInputs.manifestNumber.value);
+
+    // Clear manifest for next one (after report save has cleared staging)
     formInputs.manifestNumber.value = getNextManifestNumber();
     orders = [];
     setDefaultDate();
     saveState();
-    renderTable();
+    await renderTable();
 }
 
 function saveBlob(buffer, fileName) {
@@ -1584,7 +1574,7 @@ async function fetchInvoices(area = null) {
             url += `?area=${encodeURIComponent(area)}`;
         }
 
-        const response = await fetch(url);
+        const response = await apiFetch(url);
         if (!response.ok) {
             throw new Error('Failed to fetch invoices');
         }
@@ -1713,12 +1703,8 @@ async function addSelectedInvoices() {
 
 async function allocateInvoices(filenames) {
     try {
-        const response = await fetch(`${API_URL}/invoices/allocate`, {
+        const response = await apiFetch(`${API_URL}/invoices/allocate`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Username': currentUser || 'anonymous'
-            },
             body: JSON.stringify({ filenames: filenames })
         });
 
@@ -1738,7 +1724,7 @@ async function refreshInvoices() {
 
     try {
         // Trigger a rescan of PDFs on the server
-        await fetch(`${API_URL}/invoices/refresh`, { method: 'POST' });
+        await apiFetch(`${API_URL}/invoices/refresh`, { method: 'POST' });
 
         // Reload the modal
         const selectedArea = null;
