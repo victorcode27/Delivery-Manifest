@@ -54,7 +54,7 @@ def get_all_orders(allocated: bool = False) -> List[Dict]:
 
 def get_available_orders_excluding_staging(
     area: Optional[str] = None,
-    limit: int = 200,
+    limit: int = 2000,
     offset: int = 0,
 ) -> Tuple[List[Dict], int]:
     """
@@ -75,6 +75,7 @@ def get_available_orders_excluding_staging(
                       WHERE ms.invoice_id = o.id
                   )
               AND o.type = 'INVOICE'
+              AND o.status != 'CANCELLED'
               AND (
                     o.manifest_number IS NULL
                  OR NOT EXISTS (

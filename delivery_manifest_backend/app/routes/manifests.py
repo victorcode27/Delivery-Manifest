@@ -88,7 +88,7 @@ def health_check():
 @router.get("/invoices")
 def get_invoices(
     area:   Optional[str] = None,
-    limit:  int           = 200,
+    limit:  int           = 2000,
     offset: int           = 0,
 ):
     """

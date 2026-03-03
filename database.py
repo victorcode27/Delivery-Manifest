@@ -409,14 +409,17 @@ def get_available_orders_excluding_staging():
     result = execute_sqlite_wrapper(db, """
         SELECT *
         FROM orders o
-        WHERE o.id NOT IN (
-            SELECT invoice_id FROM manifest_staging
+        WHERE NOT EXISTS (
+            SELECT 1 FROM manifest_staging ms
+            WHERE ms.invoice_id = o.id
         )
         AND o.type = 'INVOICE'
+        AND o.status != 'CANCELLED'
         AND (
             o.manifest_number IS NULL
-            OR o.manifest_number NOT IN (
-                SELECT DISTINCT manifest_number FROM reports
+            OR NOT EXISTS (
+                SELECT 1 FROM reports r
+                WHERE r.manifest_number = o.manifest_number
             )
         )
         ORDER BY o.date_processed DESC
@@ -1139,7 +1142,7 @@ def get_outstanding_orders() -> List[Dict]:
     db = SessionLocal()
     
     query = """
-        SELECT 
+        SELECT
             invoice_number,
             order_number,
             customer_name,
@@ -1147,12 +1150,15 @@ def get_outstanding_orders() -> List[Dict]:
             customer_number,
             total_value,
             area
-        FROM orders
-        WHERE 
-            invoice_number NOT IN (SELECT DISTINCT invoice_number FROM report_items)
-            AND status != 'CANCELLED'
-            AND type = 'INVOICE'
-        ORDER BY invoice_date DESC, invoice_number DESC
+        FROM orders o
+        WHERE
+            NOT EXISTS (
+                SELECT 1 FROM report_items ri
+                WHERE ri.invoice_number = o.invoice_number
+            )
+            AND o.status != 'CANCELLED'
+            AND o.type = 'INVOICE'
+        ORDER BY o.invoice_date DESC, o.invoice_number DESC
     """
     
     result = execute_sqlite_wrapper(db, query)
