@@ -7,7 +7,7 @@ Or: python api_server.py
 import os
 import logging
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Body, Request
+from fastapi import FastAPI, HTTPException, Body, Request, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -169,14 +169,15 @@ class ReportRequest(BaseModel):
 
 
 # --- API Endpoints ---
-
+# All API routes go on this router, mounted at /api
+api_router = APIRouter()
 
 
 # =============================================
 # INVOICE ENDPOINTS
 # =============================================
 
-@app.get("/invoices")
+@api_router.get("/invoices")
 def get_invoices(area: Optional[str] = None):
     """Get all pending invoices. Optionally filter by area."""
     try:
@@ -206,7 +207,7 @@ def get_invoices(area: Optional[str] = None):
         logger.error(f"Error fetching invoices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/areas")
+@api_router.get("/areas")
 def get_areas():
     """Get list of unique areas from all invoices."""
     try:
@@ -216,7 +217,7 @@ def get_areas():
         logger.error(f"Error fetching areas: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/customers")
+@api_router.get("/customers")
 def get_customers():
     """Get list of unique customer names from all invoices (pending and allocated)."""
     try:
@@ -226,7 +227,7 @@ def get_customers():
         logger.error(f"Error fetching customers: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/invoices/allocate")
+@api_router.post("/invoices/allocate")
 def allocate_invoices(request_data: AllocateRequest, request: Request):
     """Add invoices to manifest staging (does NOT update invoices table until confirm)."""
     try:
@@ -246,7 +247,7 @@ def allocate_invoices(request_data: AllocateRequest, request: Request):
         logger.error(f"Error adding to staging: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/invoices/refresh")
+@api_router.post("/invoices/refresh")
 def refresh_invoices():
     """Trigger a re-scan of the input folder for new PDFs."""
     try:
@@ -260,7 +261,7 @@ def refresh_invoices():
         logger.error(f"Error refreshing invoices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/watcher/status")
+@api_router.get("/watcher/status")
 def get_watcher_status():
     """Get the status of the file watcher service."""
     global watcher_service
@@ -287,7 +288,7 @@ class ManualInvoiceRequest(BaseModel):
     customer_number: Optional[str] = "N/A"
     area: Optional[str] = "UNKNOWN"
 
-@app.post("/invoices/manual")
+@api_router.post("/invoices/manual")
 def add_manual_invoice(request: ManualInvoiceRequest):
     """Add a manual invoice entry."""
     try:
@@ -321,7 +322,7 @@ def add_manual_invoice(request: ManualInvoiceRequest):
         logger.error(f"Error adding manual invoice: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/invoices/search")
+@api_router.get("/invoices/search")
 def search_invoices(q: str):
     """Search for historical invoices."""
     try:
@@ -331,7 +332,7 @@ def search_invoices(q: str):
         logger.error(f"Error searching invoices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/invoices/restore")
+@api_router.post("/invoices/restore")
 def restore_invoices(request: AllocateRequest):
     """Restore (de-allocate) invoices back to pending status."""
     try:
@@ -350,19 +351,30 @@ def restore_invoices(request: AllocateRequest):
 # AUTH ENDPOINTS
 # =============================================
 
-@app.post("/auth/login")
+@api_router.post("/auth/login")
 def login(request: LoginRequest):
-    """Verify user credentials and return user info."""
+    """Verify user credentials and return user info (compatible with Render backend response)."""
     try:
         user = database.verify_user(request.username, request.password)
         if user:
-            logger.info(f"User '{request.username}' logged in")
+            # Map legacy is_admin/can_manifest to new role system
+            if bool(user.get("is_admin")):
+                role = "FULL_ACCESS"
+            elif bool(user.get("can_manifest")):
+                role = "FULL_ACCESS"
+            else:
+                role = "REPORTS_ONLY"
+
+            logger.info(f"User '{request.username}' logged in (role={role})")
             return {
                 "success": True,
+                "access_token": None,  # Local backend has no JWT
+                "token_type": "bearer",
                 "user": {
+                    "id": user.get("id", 0),
                     "username": user["username"],
-                    "isAdmin": bool(user["is_admin"]),
-                    "canManifest": bool(user["can_manifest"])
+                    "role": role,
+                    "isActive": True,
                 }
             }
         else:
@@ -374,17 +386,30 @@ def login(request: LoginRequest):
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/users")
+@api_router.get("/users")
 def get_users():
-    """Get all users (admin only in production)."""
+    """Get all users, mapped to new role format for frontend compatibility."""
     try:
-        users = database.get_all_users()
+        raw_users = database.get_all_users()
+        users = []
+        for u in raw_users:
+            if bool(u.get("is_admin")) or bool(u.get("can_manifest")):
+                role = "FULL_ACCESS"
+            else:
+                role = "REPORTS_ONLY"
+            users.append({
+                "id": u.get("id", 0),
+                "username": u["username"],
+                "role": role,
+                "is_active": True,
+                "created_at": u.get("created_at"),
+            })
         return {"users": users}
     except Exception as e:
         logger.error(f"Error fetching users: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/users")
+@api_router.post("/users")
 def create_user(request: UserCreate):
     """Create a new user."""
     try:
@@ -405,7 +430,7 @@ def create_user(request: UserCreate):
         logger.error(f"Error creating user: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/users/{username}")
+@api_router.put("/users/{username}")
 def update_user(username: str, request: UserUpdate):
     """Update a user's details."""
     try:
@@ -426,7 +451,7 @@ def update_user(username: str, request: UserUpdate):
         logger.error(f"Error updating user: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/users/{username}")
+@api_router.delete("/users/{username}")
 def delete_user(username: str):
     """Delete a user."""
     try:
@@ -446,7 +471,7 @@ def delete_user(username: str):
 # REPORTS ENDPOINTS
 # =============================================
 
-@app.post("/reports")
+@api_router.post("/reports")
 def save_report(request_data: ReportRequest, request: Request):
     """Save a dispatch report."""
     try:
@@ -464,7 +489,7 @@ def save_report(request_data: ReportRequest, request: Request):
         logger.error(f"Error saving report: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/reports")
+@api_router.get("/reports")
 def get_reports(date_from: Optional[str] = None, date_to: Optional[str] = None):
     """
     Get dispatch reports, optionally filtered by date range.
@@ -483,7 +508,7 @@ def get_reports(date_from: Optional[str] = None, date_to: Optional[str] = None):
 # NEW DISPATCH REPORT ENDPOINTS
 # =============================================
 
-@app.get("/reports/dispatched")
+@api_router.get("/reports/dispatched")
 def get_dispatched_invoices(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -554,7 +579,7 @@ def get_dispatched_invoices(
         logger.error(f"Error fetching dispatched invoices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/reports/outstanding")
+@api_router.get("/reports/outstanding")
 def get_outstanding_invoices():
     """
     Get outstanding orders (invoices with NO dispatch record).
@@ -583,7 +608,7 @@ def get_outstanding_invoices():
 # EXISTING MANIFEST ENDPOINTS
 # =============================================
 
-@app.get("/manifests/{manifest_number}")
+@api_router.get("/manifests/{manifest_number}")
 def get_manifest_details(manifest_number: str):
     """Get full details/history of a manifest."""
     try:
@@ -598,7 +623,7 @@ def get_manifest_details(manifest_number: str):
         logger.error(f"Error fetching manifest details: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/manifests/search/query")
+@api_router.get("/manifests/search/query")
 def search_manifests(q: str):
     """Search for a specific manifest details by number."""
     # This might return just the details or a list if partial match. 
@@ -619,7 +644,7 @@ def search_manifests(q: str):
 # MANIFEST STAGING ENDPOINTS (NEW - FIX FOR WORKFLOW BUG)
 # =============================================
 
-@app.get("/manifest/current")
+@api_router.get("/manifest/current")
 def get_current_manifest_staging(request: Request, manifest_number: Optional[str] = None):
     """Get invoices in current manifest.
     
@@ -636,7 +661,7 @@ def get_current_manifest_staging(request: Request, manifest_number: Optional[str
         logger.error(f"Error fetching current manifest: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/manifest/remove")
+@api_router.post("/manifest/remove")
 def remove_from_manifest_staging(request_data: AllocateRequest, request: Request):
     """Remove invoices from current manifest staging."""
     try:
@@ -656,7 +681,7 @@ def remove_from_manifest_staging(request_data: AllocateRequest, request: Request
 # SETTINGS ENDPOINTS
 # =============================================
 
-@app.get("/settings/{category}")
+@api_router.get("/settings/{category}")
 def get_settings(category: str):
     """Get all values for a settings category."""
     try:
@@ -666,7 +691,7 @@ def get_settings(category: str):
         logger.error(f"Error fetching settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/settings")
+@api_router.post("/settings")
 def add_setting(request: SettingRequest):
     """Add a new setting value."""
     try:
@@ -681,7 +706,7 @@ def add_setting(request: SettingRequest):
         logger.error(f"Error adding setting: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/settings")
+@api_router.put("/settings")
 def update_setting(request: SettingUpdateRequest):
     """Update a setting value."""
     try:
@@ -696,7 +721,7 @@ def update_setting(request: SettingUpdateRequest):
         logger.error(f"Error updating setting: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/settings/{category}/{value}")
+@api_router.delete("/settings/{category}/{value}")
 def delete_setting(category: str, value: str):
     """Delete a setting value."""
     try:
@@ -715,7 +740,7 @@ def delete_setting(category: str, value: str):
 # TRUCKS ENDPOINTS
 # =============================================
 
-@app.get("/trucks")
+@api_router.get("/trucks")
 def get_trucks():
     """Get all trucks."""
     try:
@@ -725,7 +750,7 @@ def get_trucks():
         logger.error(f"Error fetching trucks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/trucks")
+@api_router.post("/trucks")
 def add_truck(request: TruckRequest):
     """Add a new truck."""
     try:
@@ -740,7 +765,7 @@ def add_truck(request: TruckRequest):
         logger.error(f"Error adding truck: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/trucks/{reg}")
+@api_router.put("/trucks/{reg}")
 def update_truck(reg: str, request: TruckRequest):
     """Update a truck's details."""
     try:
@@ -755,7 +780,7 @@ def update_truck(reg: str, request: TruckRequest):
         logger.error(f"Error updating truck: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/trucks/{reg}")
+@api_router.delete("/trucks/{reg}")
 def delete_truck(reg: str):
     """Delete a truck."""
     try:
@@ -774,7 +799,7 @@ def delete_truck(reg: str):
 # CUSTOMER ROUTE ENDPOINTS
 # =============================================
 
-@app.get("/customer-routes")
+@api_router.get("/customer-routes")
 def get_customer_routes():
     """Get all customer-route mappings."""
     try:
@@ -784,7 +809,7 @@ def get_customer_routes():
         logger.error(f"Error fetching customer routes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/customer-routes")
+@api_router.post("/customer-routes")
 def add_customer_route(request: CustomerRouteRequest):
     """Add or update a customer-route mapping."""
     try:
@@ -799,7 +824,7 @@ def add_customer_route(request: CustomerRouteRequest):
         logger.error(f"Error adding customer route: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/customer-routes/{customer_name}")
+@api_router.delete("/customer-routes/{customer_name}")
 def delete_customer_route(customer_name: str):
     """Delete a customer-route mapping."""
     try:
@@ -819,7 +844,7 @@ def delete_customer_route(customer_name: str):
 # MANIFEST FILE ENDPOINTS
 # =============================================
 
-@app.post("/manifests/save")
+@api_router.post("/manifests/save")
 async def save_manifest(file: UploadFile = File(...)):
     """Save the generated manifest Excel file to the manifests folder."""
     try:
@@ -839,6 +864,9 @@ async def save_manifest(file: UploadFile = File(...)):
 
 
 
+
+# Mount all API routes under /api prefix
+app.include_router(api_router, prefix="/api")
 
 # --- Serve Static Files (Frontend) ---
 # Place this AT THE END so it doesn't override API routes
@@ -870,7 +898,7 @@ async def read_file(filename: str):
 # DEV MODE ENDPOINTS & HELPERS
 # =============================================
 
-@app.get("/health")
+@api_router.get("/health")
 def health_check():
     """Returns server health status, timestamp, and DEV_MODE flag."""
     return {
