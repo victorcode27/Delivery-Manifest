@@ -524,7 +524,7 @@ def remove_from_staging(session_id: str, filenames: List[str]) -> int:
         WHERE filename IN ({placeholders})
     ''', filenames)
     
-    invoice_ids = [row['id'] for row in result.fetchall()]
+    invoice_ids = [row._mapping['id'] for row in result.fetchall()]
     
     if not invoice_ids:
         db.close()
@@ -673,103 +673,109 @@ def update_user(username: str, password: str = None, is_admin: bool = None, can_
 
 def save_report(report_data: Dict) -> int:
     """Save a dispatch report. Returns the report ID."""
+    import traceback
     db = SessionLocal()
     manifest_number = report_data.get('manifestNumber')
+    try:
+        # Retry with a unique suffix if manifest_number already exists
+        report_id = None
+        for attempt in range(5):
+            try:
+                if attempt > 0:
+                    db.rollback()
+                print(f"[save_report] Inserting report, manifest={manifest_number}, attempt={attempt}")
+                result = execute_sqlite_wrapper(db, '''
+                    INSERT INTO reports (manifest_number, date, date_dispatched, driver, assistant, checker, reg_number,
+                                        pallets_brown, pallets_blue, crates, mileage, total_value,
+                                        total_sku, total_weight, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    manifest_number,
+                    report_data.get('date'),
+                    report_data.get('date'),  # date_dispatched = date
+                    report_data.get('driver'),
+                    report_data.get('assistant'),
+                    report_data.get('checker'),
+                    report_data.get('regNumber'),
+                    report_data.get('palletsBrown', 0),
+                    report_data.get('palletsBlue', 0),
+                    report_data.get('crates', 0),
+                    report_data.get('mileage', 0),
+                    report_data.get('totalValue', 0),
+                    report_data.get('totalSku', 0),
+                    report_data.get('totalWeight', 0),
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ))
+                row = result.fetchone()
+                report_id = row[0] if row else None
+                print(f"[save_report] reports INSERT ok, report_id={report_id}")
+                break  # success
+            except IntegrityError:
+                # Duplicate manifest_number — generate a unique alternative
+                manifest_number = f"{report_data.get('manifestNumber')}-{attempt + 1}"
+                print(f"[save_report] Duplicate manifest_number, retrying as {manifest_number}")
 
-    # Retry with a unique suffix if manifest_number already exists
-    report_id = None
-    for attempt in range(5):
-        try:
-            if attempt > 0:
-                db.rollback()
-            result = execute_sqlite_wrapper(db, '''
-                INSERT INTO reports (manifest_number, date, date_dispatched, driver, assistant, checker, reg_number,
-                                    pallets_brown, pallets_blue, crates, mileage, total_value,
-                                    total_sku, total_weight, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        if report_id is None:
+            raise RuntimeError(f"Failed to insert report after retries (manifest: {manifest_number})")
+
+        # Save report items (invoices)
+        invoices = report_data.get('invoices', [])
+        print(f"[save_report] Inserting {len(invoices)} report_items for report_id={report_id}")
+        for invoice in invoices:
+            execute_sqlite_wrapper(db, '''
+                INSERT INTO report_items (report_id, invoice_number, order_number, customer_name,
+                                            invoice_date, area, sku, value, weight, customer_number)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                manifest_number,
-                report_data.get('date'),
-                report_data.get('date'),  # date_dispatched = date
-                report_data.get('driver'),
-                report_data.get('assistant'),
-                report_data.get('checker'),
-                report_data.get('regNumber'),
-                report_data.get('palletsBrown', 0),
-                report_data.get('palletsBlue', 0),
-                report_data.get('crates', 0),
-                report_data.get('mileage', 0),
-                report_data.get('totalValue', 0),
-                report_data.get('totalSku', 0),
-                report_data.get('totalWeight', 0),
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                report_id,
+                invoice.get('num') or invoice.get('invoice_number', 'N/A'),
+                invoice.get('orderNum') or invoice.get('order_number', 'N/A'),
+                invoice.get('customer') or invoice.get('customer_name', 'N/A'),
+                invoice.get('invoiceDate') or invoice.get('invoice_date', 'N/A'),
+                invoice.get('area', 'UNKNOWN'),
+                invoice.get('sku', 0),
+                invoice.get('value', 0) or invoice.get('total_value', 0),
+                invoice.get('weight', 0),
+                invoice.get('customerNumber') or invoice.get('customer_number', 'N/A')
             ))
-            row = result.fetchone()
-            report_id = row[0] if row else None
-            break  # success
-        except IntegrityError:
-            # Duplicate manifest_number — generate a unique alternative
-            manifest_number = f"{report_data.get('manifestNumber')}-{attempt + 1}"
 
-    if report_id is None:
+        # Finalize invoices from staging if session_id is provided
+        session_id = report_data.get('session_id')
+        if session_id:
+            # Get all invoice filenames from staging for this session
+            staged_result = execute_sqlite_wrapper(db, '''
+                SELECT o.filename
+                FROM orders o
+                INNER JOIN manifest_staging ms ON ms.invoice_id = o.id
+                WHERE ms.session_id = ?
+            ''', (session_id,))
+            staged_filenames = [row._mapping['filename'] for row in staged_result.fetchall()]
+            print(f"[save_report] Staging has {len(staged_filenames)} invoices for session={session_id}")
+
+            if staged_filenames:
+                placeholders = ','.join(['?' for _ in staged_filenames])
+                allocated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                upd = execute_sqlite_wrapper(db, f'''
+                    UPDATE orders
+                    SET is_allocated = 1, allocated_date = ?, manifest_number = ?
+                    WHERE filename IN ({placeholders})
+                ''', [allocated_date, manifest_number] + staged_filenames)
+                print(f"[save_report] Marked {upd.rowcount} orders as allocated")
+
+            # Clear staging for this session
+            del_result = execute_sqlite_wrapper(db, 'DELETE FROM manifest_staging WHERE session_id = ?', (session_id,))
+            print(f"[save_report] Cleared {del_result.rowcount} staging rows for session={session_id}")
+
+        db.commit()
+        print(f"[save_report] Committed. Report {manifest_number} saved, id={report_id}")
+        return report_id
+
+    except Exception as e:
+        print(f"[save_report] ERROR saving report {manifest_number}: {e}\n{traceback.format_exc()}")
+        db.rollback()
+        raise
+    finally:
         db.close()
-        raise RuntimeError(f"Failed to insert report after retries (manifest: {manifest_number})")
-
-    # Save report items (invoices)
-    for invoice in report_data.get('invoices', []):
-        result = execute_sqlite_wrapper(db, '''
-            INSERT INTO report_items (report_id, invoice_number, order_number, customer_name,
-                                        invoice_date, area, sku, value, weight, customer_number)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            report_id,
-            invoice.get('num') or invoice.get('invoice_number', 'N/A'),
-            invoice.get('orderNum') or invoice.get('order_number', 'N/A'),
-            invoice.get('customer') or invoice.get('customer_name', 'N/A'),
-            invoice.get('invoiceDate') or invoice.get('invoice_date', 'N/A'),
-            invoice.get('area', 'UNKNOWN'),
-            invoice.get('sku', 0),
-            invoice.get('value', 0) or invoice.get('total_value', 0),
-            invoice.get('weight', 0),
-            invoice.get('customerNumber') or invoice.get('customer_number', 'N/A')
-        ))
-
-    # FIX: Finalize invoices from staging if session_id is provided
-    session_id = report_data.get('session_id')
-    if session_id:
-        # Get all invoice filenames from staging for this session
-        result = execute_sqlite_wrapper(db, '''
-            SELECT o.filename
-            FROM orders o
-            INNER JOIN manifest_staging ms ON ms.invoice_id = o.id
-            WHERE ms.session_id = ?
-        ''', (session_id,))
-
-        staged_filenames = [row['filename'] for row in result.fetchall()]
-
-        if staged_filenames:
-            # Update invoices to DISPATCHED
-            placeholders = ','.join(['?' for _ in staged_filenames])
-            allocated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            result = execute_sqlite_wrapper(db, f'''
-                UPDATE orders
-                SET is_allocated = 1, allocated_date = ?, manifest_number = ?
-                WHERE filename IN ({placeholders})
-            ''', [allocated_date, manifest_number] + staged_filenames)
-
-            print(f"Finalized {result.rowcount} invoices from staging for session: {session_id}")
-
-        # Clear staging for this session
-        result = execute_sqlite_wrapper(db, 'DELETE FROM manifest_staging WHERE session_id = ?', (session_id,))
-        print(f"Cleared staging for session: {session_id}")
-
-    db.commit()
-    db.close()
-
-    # Log the event
-    log_manifest_event(manifest_number, 'CREATED', 'System')
-
-    return report_id
 
 def get_reports(date_from: str = None, date_to: str = None) -> List[Dict]:
     """Get all reports with their items, optionally filtered by date range."""
@@ -791,12 +797,12 @@ def get_reports(date_from: str = None, date_to: str = None) -> List[Dict]:
     
     query += ' ORDER BY id DESC'
     result = execute_sqlite_wrapper(db, query, params)
-    reports = [dict(row) for row in result.fetchall()]
-    
+    reports = [dict(row._mapping) for row in result.fetchall()]
+
     # Add items to each report
     for report in reports:
-        result = execute_sqlite_wrapper(db, 'SELECT * FROM report_items WHERE report_id = ?', (report['id'],))
-        report['invoices'] = [dict(row) for row in result.fetchall()]
+        items_result = execute_sqlite_wrapper(db, 'SELECT * FROM report_items WHERE report_id = ?', (report['id'],))
+        report['invoices'] = [dict(row._mapping) for row in items_result.fetchall()]
     
     db.close()
     return reports
@@ -813,18 +819,18 @@ def get_manifest_details(manifest_number: str) -> Optional[Dict]:
         db.close()
         return None
         
-    result = dict(report)
-    
+    report_dict = dict(report._mapping)
+
     # Get Linked Invoices
-    result = execute_sqlite_wrapper(db, 'SELECT * FROM report_items WHERE report_id = ?', (result['id'],))
-    result['invoices'] = [dict(row) for row in result.fetchall()]
-    
+    items_result = execute_sqlite_wrapper(db, 'SELECT * FROM report_items WHERE report_id = ?', (report_dict['id'],))
+    report_dict['invoices'] = [dict(row._mapping) for row in items_result.fetchall()]
+
     # Get Audit Events
-    result = execute_sqlite_wrapper(db, 'SELECT * FROM manifest_events WHERE manifest_number = ? ORDER BY timestamp DESC', (manifest_number,))
-    result['events'] = [dict(row) for row in result.fetchall()]
-    
+    events_result = execute_sqlite_wrapper(db, 'SELECT * FROM manifest_events WHERE manifest_number = ? ORDER BY timestamp DESC', (manifest_number,))
+    report_dict['events'] = [dict(row._mapping) for row in events_result.fetchall()]
+
     db.close()
-    return result
+    return report_dict
 
 def log_manifest_event(manifest_number: str, event_type: str, performed_by: str = 'System') -> bool:
     """Log an event for a manifest."""
