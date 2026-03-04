@@ -87,7 +87,7 @@ const elements = {
  */
 async function loadRoutes() {
     try {
-        const res = await fetch(`${API_BASE_URL}/customer-routes`);
+        const res = await apiFetch(`${API_BASE_URL}/customer-routes`);
         if (!res.ok) return;
         const data = await res.json();
         // data.routes is { customer_name: route_name, ... } — extract distinct route names
@@ -542,7 +542,7 @@ async function loadData() {
         console.log('2. API Request URL:', url);
         console.log('3. Query Parameters:', Object.fromEntries(params));
 
-        const response = await fetch(url);
+        const response = await apiFetch(url);
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -843,7 +843,8 @@ function escapeHtml(text) {
 
 // Initialize when DOM is ready
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', () => { requireAuth(); init(); });
 } else {
+    requireAuth();
     init();
 }

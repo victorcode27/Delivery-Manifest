@@ -5,7 +5,7 @@ let availableInvoices = []; // Invoices loaded from API
 let currentUser = null;
 let currentUserId = null;
 let currentUserRole = null; // 'FULL_ACCESS' or 'REPORTS_ONLY'
-let accessToken = null;     // JWT token from login
+let accessToken = getToken() || null;     // JWT token, restored from localStorage on page load
 let users = [];
 let loginIntent = null; // 'manifest' or 'report'
 let currentReportView = 'dispatched'; // 'dispatched' or 'outstanding'
@@ -21,26 +21,7 @@ const API_URL = '/api';
 // Safety check: Log resolved origin on startup
 console.log(`[API Config] Using relative API paths. Page origin: ${window.location.origin}`);
 
-/**
- * Authenticated fetch wrapper — attaches JWT Bearer token automatically.
- * Falls back to X-Username header when no token is available (local dev).
- */
-async function apiFetch(url, options = {}) {
-    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-    if (accessToken) {
-        headers['Authorization'] = `Bearer ${accessToken}`;
-    } else {
-        headers['X-Username'] = currentUser || 'anonymous';
-    }
-    const response = await fetch(url, { ...options, headers });
-    // Auto-logout on 401 (expired/invalid token)
-    if (response.status === 401 && accessToken) {
-        console.warn('[apiFetch] 401 — token expired, logging out.');
-        handleLogout();
-        return response;
-    }
-    return response;
-}
+// apiFetch is provided by auth.js (loaded before this script)
 
 // Error Logger for UI
 function logError(msg) {
@@ -119,7 +100,7 @@ async function loadSettings() {
     // Never throws — all errors are logged to console only.
     async function safeFetch(url, label) {
         try {
-            const res = await fetch(url);
+            const res = await apiFetch(url);
             if (!res.ok) {
                 console.error(`[Settings] ${label} returned HTTP ${res.status} ${res.statusText}`);
                 return null;
@@ -440,7 +421,7 @@ async function submitManualEntry() {
     }
 
     try {
-        const response = await fetch(`${API_URL}/invoices/manual`, {
+        const response = await apiFetch(`${API_URL}/invoices/manual`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -489,7 +470,7 @@ function searchRestoreHistory(e) {
 
     restoreDebounceTimer = setTimeout(async () => {
         try {
-            const response = await fetch(`${API_URL}/invoices/search?q=${encodeURIComponent(query)}`);
+            const response = await apiFetch(`${API_URL}/invoices/search?q=${encodeURIComponent(query)}`);
             const data = await response.json();
             renderRestoreTable(data.results || []);
         } catch (e) {
@@ -557,7 +538,7 @@ async function restoreSelectedInvoices() {
     if (!confirm(`Are you sure you want to restore ${selectedFilenames.length} invoices to Pending status?`)) return;
 
     try {
-        const response = await fetch(`${API_URL}/invoices/restore`, {
+        const response = await apiFetch(`${API_URL}/invoices/restore`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filenames: selectedFilenames })
@@ -946,7 +927,7 @@ async function renderReports() {
         console.log("=== FETCHING DISPATCHED REPORTS ===");
         console.log("URL:", url);
 
-        const response = await fetch(url);
+        const response = await apiFetch(url);
         const data = await response.json();
 
         console.log("=== DISPATCHED REPORTS DATA ===");
@@ -1110,7 +1091,7 @@ async function handleSearchInput(e) {
     // If it starts with 'M' and has digits, or just try to find it via API
     if (searchTerm.length > 2) {
         try {
-            const response = await fetch(`${API_URL}/manifests/search/query?q=${encodeURIComponent(searchTerm)}`);
+            const response = await apiFetch(`${API_URL}/manifests/search/query?q=${encodeURIComponent(searchTerm)}`);
             const data = await response.json();
 
             if (data.match) {
@@ -1161,7 +1142,7 @@ async function renderOutstandingOrders() {
     list.innerHTML = '';
 
     try {
-        const response = await fetch(`${API_URL}/reports/outstanding`);
+        const response = await apiFetch(`${API_URL}/reports/outstanding`);
         const data = await response.json();
 
         console.log("=== OUTSTANDING ORDERS DATA ===");
@@ -1537,7 +1518,7 @@ async function uploadManifest(blob, filename) {
     formData.append('file', blob, filename);
 
     try {
-        const response = await fetch(`${API_URL}/manifests/save`, {
+        const response = await apiFetch(`${API_URL}/manifests/save`, {
             method: 'POST',
             body: formData
         });
@@ -1879,7 +1860,7 @@ async function addSettingsItem(category) {
 
     // Add to server
     try {
-        const response = await fetch(`${API_URL}/settings`, {
+        const response = await apiFetch(`${API_URL}/settings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ category, value })
@@ -1913,7 +1894,7 @@ async function removeSettingsItem(category, index) {
 
     if (confirm(`Are you sure you want to remove "${itemName}"?`)) {
         try {
-            const response = await fetch(`${API_URL}/settings/${category}/${encodeURIComponent(itemName)}`, {
+            const response = await apiFetch(`${API_URL}/settings/${category}/${encodeURIComponent(itemName)}`, {
                 method: 'DELETE'
             });
 
@@ -1997,7 +1978,7 @@ async function addTruck() {
     };
 
     try {
-        const response = await fetch(`${API_URL}/trucks`, {
+        const response = await apiFetch(`${API_URL}/trucks`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(newTruck)
@@ -2028,7 +2009,7 @@ async function removeTruck(index) {
 
     if (confirm(`Are you sure you want to remove truck "${truck.reg}"?`)) {
         try {
-            const response = await fetch(`${API_URL}/trucks/${encodeURIComponent(truck.reg)}`, {
+            const response = await apiFetch(`${API_URL}/trucks/${encodeURIComponent(truck.reg)}`, {
                 method: 'DELETE'
             });
 
@@ -2165,7 +2146,7 @@ async function saveTruckEdit(index) {
     };
 
     try {
-        const response = await fetch(`${API_URL}/trucks/${encodeURIComponent(settingsData.trucks[index].reg)}`, {
+        const response = await apiFetch(`${API_URL}/trucks/${encodeURIComponent(settingsData.trucks[index].reg)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(updatedTruck)
@@ -2294,7 +2275,7 @@ async function addCustomerRoute() {
 
     // Attempt to save to server
     try {
-        const response = await fetch(`${API_URL}/customer-routes`, {
+        const response = await apiFetch(`${API_URL}/customer-routes`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -2324,7 +2305,7 @@ async function addCustomerRoute() {
 async function removeCustomerRoute(customerName) {
     if (confirm(`Remove route assignment for "${customerName}"?`)) {
         try {
-            const response = await fetch(`${API_URL}/customer-routes/${encodeURIComponent(customerName)}`, {
+            const response = await apiFetch(`${API_URL}/customer-routes/${encodeURIComponent(customerName)}`, {
                 method: 'DELETE'
             });
 
@@ -2611,7 +2592,7 @@ async function renderReportsWithRouteFilter() {
         if (dateFrom) params.append('date_from', dateFrom);
         if (dateTo) params.append('date_to', dateTo);
 
-        const response = await fetch(`${API_URL}/reports/dispatched?${params.toString()}`);
+        const response = await apiFetch(`${API_URL}/reports/dispatched?${params.toString()}`);
         if (!response.ok) throw new Error("Failed to fetch reports");
 
         const data = await response.json();
@@ -2791,7 +2772,7 @@ async function populateCustomerSuggestions() {
 
     try {
         // Fetch ALL customers from database (pending and allocated)
-        const response = await fetch(`${API_URL}/customers`);
+        const response = await apiFetch(`${API_URL}/customers`);
         if (response.ok) {
             const data = await response.json();
             data.customers.forEach(name => customers.add(name));
@@ -2935,7 +2916,7 @@ async function renderOutstandingOrders() {
 
     try {
         // Fetch pending invoices from API
-        const response = await fetch(`${API_URL}/invoices`);
+        const response = await apiFetch(`${API_URL}/invoices`);
         if (!response.ok) throw new Error('Failed to fetch outstanding orders');
 
         const data = await response.json();
@@ -3121,6 +3102,7 @@ async function handleLogin() {
 
         // Store JWT token
         accessToken = data.access_token || null;
+        if (accessToken) setToken(accessToken);
 
         const user = {
             id: data.user.id,
@@ -3161,6 +3143,7 @@ async function finalizeLogin(user) {
     currentUser = user.username;
     currentUserId = user.id;
     currentUserRole = user.role || ROLE_FULL_ACCESS;
+    setCurrentUser(user.username);
 
 
     // Explicitly re-initialize the main form data
@@ -3511,6 +3494,7 @@ function handleLogout() {
     currentUserRole = null;
     accessToken = null;
     loginIntent = null;
+    clearToken();
 
     // Hide any open modals
     document.querySelectorAll('.modal').forEach(m => {

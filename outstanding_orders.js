@@ -190,7 +190,7 @@ async function loadData() {
     showLoadingState();
 
     try {
-        const response = await fetch(API_ENDPOINT);
+        const response = await apiFetch(API_ENDPOINT);
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -357,7 +357,8 @@ function escapeHtml(text) {
 
 // Initialize when DOM is ready
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', () => { requireAuth(); init(); });
 } else {
+    requireAuth();
     init();
 }
