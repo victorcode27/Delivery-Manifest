@@ -196,11 +196,14 @@ const orderCountEl = document.getElementById('order-count');
 // Initialization
 document.addEventListener('DOMContentLoaded', async () => {
     // WAIT for settings to load first (defensive against API failures)
-    try {
-        await loadSettings();
-    } catch (e) {
-        console.warn("Settings failed to load, continuing with empty defaults");
-        logError("Settings failed, continuing with empty defaults");
+    // Only fetch from server if a token exists — avoids 401 alert on unauthenticated page load
+    if (getToken() || localStorage.getItem('currentUser')) {
+        try {
+            await loadSettings();
+        } catch (e) {
+            console.warn("Settings failed to load, continuing with empty defaults");
+            logError("Settings failed, continuing with empty defaults");
+        }
     }
 
     // Now initialize UI with loaded (or empty) settings
@@ -817,6 +820,11 @@ async function loadState() {
 async function loadCurrentManifestFromAPI() {
     // CLEAR FIRST - prevent showing stale data if API fails
     orders = [];
+
+    // Skip API call if unauthenticated — avoids 401 alert on page load before login
+    if (!getToken() && !localStorage.getItem('currentUser')) {
+        return;
+    }
 
     try {
         const response = await apiFetch(`${API_URL}/manifest/current`);

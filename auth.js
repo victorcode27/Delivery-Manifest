@@ -71,9 +71,13 @@ async function apiFetch(url, options = {}) {
     const response = await fetch(url, { ...options, headers });
 
     if (response.status === 401) {
-        alert('Session expired. Please log in again.');
-        clearToken();
-        window.location.href = 'index.html';
+        if (token) {
+            // A token existed but was rejected — genuine session expiry
+            alert('Session expired. Please log in again.');
+            clearToken();
+            window.location.href = 'index.html';
+        }
+        // No token: unauthenticated page load — return silently (login UI is already visible)
         return response;
     }
 
