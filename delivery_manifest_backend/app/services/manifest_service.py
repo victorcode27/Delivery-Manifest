@@ -128,6 +128,162 @@ def get_order_by_invoice_number(invoice_number: str) -> Optional[Dict]:
         db.close()
 
 
+def _apply_credit_note(cn: Dict, invoice: Dict) -> bool:
+    """
+    Apply a single credit note to its referenced invoice.
+
+    Determines full vs. partial credit by comparing values, then either
+    cancels the invoice (full) or reduces its total_value (partial).
+    Marks the credit note as PROCESSED in both cases.
+
+    Returns True if reconciliation succeeded, False on value-parse error.
+    """
+    cn_number  = cn.get("invoice_number", "?")
+    inv_number = invoice.get("invoice_number", "?")
+
+    try:
+        credit_val  = float(str(cn["total_value"]).replace(",", ""))
+        invoice_val = float(str(invoice["total_value"]).replace(",", ""))
+    except (ValueError, TypeError):
+        logger.error(
+            f"[Reconcile] Cannot parse values — CN {cn_number}: {cn.get('total_value')!r}, "
+            f"Invoice {inv_number}: {invoice.get('total_value')!r}"
+        )
+        return False
+
+    if credit_val >= invoice_val - 0.01:
+        # Full credit — cancel the invoice entirely
+        cancel_order(inv_number)
+        logger.info(
+            f"[Reconcile] FULL CREDIT: cancelled invoice {inv_number} "
+            f"(value {invoice_val:.2f}) via CN {cn_number}"
+        )
+    else:
+        # Partial credit — reduce the invoice's outstanding value
+        new_val      = invoice_val - credit_val
+        original_val = invoice.get("original_value") or invoice["total_value"]
+        update_order_value(inv_number, f"{new_val:.2f}", str(original_val))
+        logger.info(
+            f"[Reconcile] PARTIAL CREDIT: adjusted invoice {inv_number} "
+            f"from {invoice_val:.2f} to {new_val:.2f} via CN {cn_number}"
+        )
+
+    # Mark the credit note itself as PROCESSED
+    db = get_db_session()
+    try:
+        execute_query(
+            db,
+            "UPDATE orders SET status = 'PROCESSED' WHERE id = ?",
+            (cn["id"],),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return True
+
+
+def _reconcile_orphans_for_invoice(invoice_number: str) -> int:
+    """
+    Post-import hook: called after a new INVOICE is saved.
+
+    Queries for any ORPHAN credit notes that reference this invoice and
+    reconciles each one immediately.  Safe to call even when no ORPHANs
+    exist — it exits early without touching the database.
+
+    Returns the number of credit notes reconciled.
+    """
+    # Fetch waiting ORPHAN credit notes for this invoice
+    db = get_db_session()
+    try:
+        result = execute_query(
+            db,
+            """
+            SELECT * FROM orders
+            WHERE type            = 'CREDIT_NOTE'
+              AND status          = 'ORPHAN'
+              AND reference_number = ?
+            """,
+            (invoice_number,),
+        )
+        orphans = [dict(row._mapping) for row in result.fetchall()]
+    finally:
+        db.close()
+
+    if not orphans:
+        return 0
+
+    # Re-fetch the invoice (it was just inserted; get_order_by_invoice_number
+    # uses its own session so there's no stale-read risk)
+    invoice = get_order_by_invoice_number(invoice_number)
+    if not invoice:
+        return 0
+
+    reconciled = 0
+    for cn in orphans:
+        if _apply_credit_note(cn, invoice):
+            reconciled += 1
+            # Refresh invoice dict so a second partial CN sees the already-reduced value
+            invoice = get_order_by_invoice_number(invoice_number) or invoice
+
+    if reconciled:
+        logger.info(
+            f"[Reconcile] {reconciled} ORPHAN CN(s) reconciled against "
+            f"invoice {invoice_number} on import."
+        )
+    return reconciled
+
+
+def reconcile_all_orphans() -> int:
+    """
+    Startup sweep: iterate all ORPHAN credit notes and reconcile any whose
+    referenced invoice now exists in the database.
+
+    Safe to run on every application start — only touches rows with
+    status = 'ORPHAN' that have a resolvable reference_number.
+    Idempotent: already-PROCESSED credit notes are never re-touched.
+
+    Returns the total number of credit notes reconciled.
+    """
+    db = get_db_session()
+    try:
+        result = execute_query(
+            db,
+            """
+            SELECT * FROM orders
+            WHERE type             = 'CREDIT_NOTE'
+              AND status           = 'ORPHAN'
+              AND reference_number IS NOT NULL
+            ORDER BY id
+            """,
+            None,
+        )
+        orphans = [dict(row._mapping) for row in result.fetchall()]
+    finally:
+        db.close()
+
+    if not orphans:
+        logger.info("[Reconcile] Startup sweep: 0 ORPHAN credit notes found.")
+        return 0
+
+    logger.info(
+        f"[Reconcile] Startup sweep: {len(orphans)} ORPHAN credit note(s) found — "
+        "checking for resolvable matches…"
+    )
+
+    total = 0
+    for cn in orphans:
+        ref     = cn.get("reference_number")
+        invoice = get_order_by_invoice_number(ref) if ref else None
+        if not invoice:
+            continue  # Invoice still not in DB — leave as ORPHAN
+        if _apply_credit_note(cn, invoice):
+            total += 1
+
+    logger.info(f"[Reconcile] Startup sweep complete: {total} credit note(s) reconciled.")
+    return total
+
+
 def add_order(order_data: Dict) -> bool:
     """Insert a new order.  Returns False on duplicate filename."""
     db = get_db_session()
@@ -158,6 +314,14 @@ def add_order(order_data: Dict) -> bool:
             ),
         )
         db.commit()
+
+        # Post-import hook: if this is a new invoice, immediately reconcile any
+        # ORPHAN credit notes that arrived before it and have been waiting.
+        if order_data.get("type", "INVOICE") == "INVOICE":
+            inv_num = order_data.get("invoice_number", "N/A")
+            if inv_num and inv_num != "N/A":
+                _reconcile_orphans_for_invoice(inv_num)
+
         return True
     except IntegrityError:
         return False

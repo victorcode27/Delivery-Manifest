@@ -22,6 +22,7 @@ import delivery_manifest_backend.app.models  # noqa: F401 – registers all ORM 
 from delivery_manifest_backend.app.routes import auth, manifests, users
 from delivery_manifest_backend.app.tasks.pod_tasks import start_watcher, stop_watcher
 from delivery_manifest_backend.app.tasks.cleanup_tasks import start_cleanup, stop_cleanup
+from delivery_manifest_backend.app.services.manifest_service import reconcile_all_orphans
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,7 @@ app.include_router(manifests.router, prefix="/api")
 async def on_startup() -> None:
     logger.info("Starting Delivery Manifest API…")
     init_db()
+    reconcile_all_orphans()   # sweep ORPHAN credit notes whose invoices have since arrived
     watcher = start_watcher()
     app.state.watcher_service = watcher   # exposed via /watcher/status
     start_cleanup()
