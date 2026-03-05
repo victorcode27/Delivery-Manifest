@@ -21,6 +21,7 @@ from delivery_manifest_backend.app.db.database import init_db
 import delivery_manifest_backend.app.models  # noqa: F401 – registers all ORM classes before configure_mappers()
 from delivery_manifest_backend.app.routes import auth, manifests, users
 from delivery_manifest_backend.app.tasks.pod_tasks import start_watcher, stop_watcher
+from delivery_manifest_backend.app.tasks.cleanup_tasks import start_cleanup, stop_cleanup
 
 logger = get_logger(__name__)
 
@@ -67,11 +68,13 @@ async def on_startup() -> None:
     init_db()
     watcher = start_watcher()
     app.state.watcher_service = watcher   # exposed via /watcher/status
+    start_cleanup()
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     stop_watcher()
+    stop_cleanup()
     logger.info("Delivery Manifest API shut down.")
 
 
