@@ -26,14 +26,14 @@ class LoginResponse(BaseModel):
 
 # ── User CRUD ─────────────────────────────────────────────────────────────────
 
-VALID_ROLES = ("FULL_ACCESS", "REPORTS_ONLY")
+VALID_ROLES = ("ADMIN", "DISPATCH", "REPORTS_ONLY")
 
 
 class UserCreate(BaseModel):
     """Payload to register a new user."""
     username:  str
     password:  str
-    role:      str  = "FULL_ACCESS"
+    role:      str  = "ADMIN"
     is_active: bool = True
 
     @field_validator("password")

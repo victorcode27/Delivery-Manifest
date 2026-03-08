@@ -1,7 +1,7 @@
 """
 app/routes/users.py
 
-User management endpoints — FULL_ACCESS only.
+User management endpoints — ADMIN only.
 
 GET    /api/users                → list all users
 POST   /api/users                → create user
@@ -9,13 +9,13 @@ PUT    /api/users/{id}/password  → reset password
 PUT    /api/users/{id}/role      → update access level
 PUT    /api/users/{id}/status    → activate / deactivate
 
-All routes require a valid JWT with FULL_ACCESS role.
+All routes require a valid JWT with ADMIN role.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from delivery_manifest_backend.app.core.deps import require_full_access
+from delivery_manifest_backend.app.core.deps import require_admin
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.db.database import get_db
 from delivery_manifest_backend.app.schemas.user import (
@@ -35,7 +35,7 @@ logger = get_logger(__name__)
 @router.get("")
 def get_users(
     db: Session = Depends(get_db),
-    current_user: dict = Depends(require_full_access),
+    current_user: dict = Depends(require_admin),
 ):
     """Return all users (without password hashes)."""
     try:
@@ -52,7 +52,7 @@ def get_users(
 def create_user(
     request: UserCreate,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(require_full_access),
+    current_user: dict = Depends(require_admin),
 ):
     """Create a new user account."""
     try:
@@ -75,7 +75,7 @@ def reset_password(
     user_id: int,
     request: PasswordReset,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(require_full_access),
+    current_user: dict = Depends(require_admin),
 ):
     """Reset a user's password."""
     try:
@@ -96,7 +96,7 @@ def update_role(
     user_id: int,
     request: RoleUpdate,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(require_full_access),
+    current_user: dict = Depends(require_admin),
 ):
     """Change a user's access level."""
     try:
@@ -117,7 +117,7 @@ def update_status(
     user_id: int,
     request: StatusUpdate,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(require_full_access),
+    current_user: dict = Depends(require_admin),
 ):
     """Activate or deactivate a user account."""
     try:

@@ -572,11 +572,11 @@
                     </div>
                 </div>
 
-                <!-- Tab Content: Users (FULL_ACCESS Only) -->
+                <!-- Tab Content: Users (ADMIN Only) -->
                 <div class="settings-tab-content" id="tab-users">
                     <div class="settings-info-text">
                         <i data-lucide="shield"></i>
-                        <span>Manage users and access levels. <strong>Full Access</strong> = all features. <strong>Reports Only</strong> = view reports only.</span>
+                        <span>Manage users and access levels. <strong>Admin</strong> = all features. <strong>Dispatch</strong> = manifest ops, no admin. <strong>Reports Only</strong> = view reports only.</span>
                     </div>
 
                     <!-- Add User Form -->
@@ -596,7 +596,8 @@
                         <div class="form-group">
                             <label for="new-user-role">Role</label>
                             <select id="new-user-role">
-                                <option value="FULL_ACCESS">Full Access</option>
+                                <option value="ADMIN">Admin</option>
+                                <option value="DISPATCH">Dispatch</option>
                                 <option value="REPORTS_ONLY">Reports Only</option>
                             </select>
                         </div>
@@ -854,7 +855,7 @@
     </div>
 
     <script src="auth.js"></script>
-    <script src="script.js?v=3"></script>
+    <script src="script.js?v=4"></script>
     <script>
         lucide.createIcons();
     </script>

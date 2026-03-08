@@ -203,8 +203,8 @@ def _create_tables(db) -> None:
             id            SERIAL PRIMARY KEY,
             username      TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            role          TEXT NOT NULL DEFAULT 'FULL_ACCESS'
-                          CHECK (role IN ('FULL_ACCESS', 'REPORTS_ONLY')),
+            role          TEXT NOT NULL DEFAULT 'ADMIN'
+                          CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY')),
             is_active     BOOLEAN DEFAULT TRUE,
             created_at    TIMESTAMPTZ DEFAULT NOW(),
             updated_at    TIMESTAMPTZ DEFAULT NOW(),
@@ -354,7 +354,7 @@ def _run_migrations(db) -> None:
         ("report_items", "customer_number", "ALTER TABLE report_items ADD COLUMN customer_number TEXT DEFAULT 'N/A'"),
         # User model v2 — is_active / role replace is_admin / can_manifest flags
         ("users", "is_active", "ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE"),
-        ("users", "role",      "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'FULL_ACCESS'"),
+        ("users", "role",      "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'ADMIN'"),
         # User model v3 — updated_at timestamp
         ("users", "updated_at", "ALTER TABLE users ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW()"),
     ]
@@ -366,8 +366,15 @@ def _run_migrations(db) -> None:
         except Exception as exc:
             logger.warning(f"Migration warning ({table}.{column}): {exc}")
 
-    # ── Data migration: convert legacy flags → role enum ──────────────────
+    # ── Role CHECK constraint migration ───────────────────────────────────
+    # Order is critical:
+    #   1. Drop the old constraint first — otherwise writing 'ADMIN' in step 2
+    #      is rejected by CHECK (role IN ('FULL_ACCESS', 'REPORTS_ONLY')).
+    #   2. Fix all role data (legacy flags + FULL_ACCESS → ADMIN rename).
+    #   3. Add the new constraint once the data is guaranteed clean.
+    _drop_old_role_constraint(db)
     _migrate_user_roles(db)
+    _add_new_role_constraint(db)
 
 
 def _create_indexes(db) -> None:
@@ -426,36 +433,213 @@ def _create_indexes(db) -> None:
 
 def _migrate_user_roles(db) -> None:
     """
-    One-time data migration: convert legacy ``is_admin`` / ``can_manifest``
-    integer flags into the new ``role`` enum (``FULL_ACCESS`` | ``REPORTS_ONLY``).
+    Idempotent role migration run on every startup.
 
-    Mapping:
-      • is_admin = 1                         → FULL_ACCESS
-      • is_admin = 0  AND  can_manifest = 0  → REPORTS_ONLY
-      • is_admin = 0  AND  can_manifest = 1  → FULL_ACCESS
-      • Anything else / NULL                 → FULL_ACCESS
+    Pass 1 – legacy flags → role enum (for rows that pre-date the role column):
+      • is_admin = 1                        → ADMIN
+      • is_admin = 0  AND can_manifest = 0  → REPORTS_ONLY
+      • is_admin = 0  AND can_manifest = 1  → ADMIN
+      • anything else / NULL                → ADMIN
 
-    This runs on every startup but only changes rows still set to the
-    legacy default (``'user'``), so it is safe to re-run.
+    Pass 2 – rename FULL_ACCESS → ADMIN (dropped in this RBAC migration):
+      Converts any existing 'FULL_ACCESS' rows to 'ADMIN' so the new CHECK
+      constraint is satisfied.  Safe to re-run; REPORTS_ONLY and the new
+      DISPATCH rows are untouched.
     """
     try:
-        # Only touch rows that still have legacy role values
-        if not _column_exists(db, "users", "can_manifest"):
-            return  # fresh install — no legacy data to migrate
+        # Pass 1: convert old is_admin/can_manifest flags (only if column exists)
+        if _column_exists(db, "users", "can_manifest"):
+            db.execute(text(
+                "UPDATE users SET role = 'REPORTS_ONLY' "
+                "WHERE role NOT IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'FULL_ACCESS') "
+                "AND COALESCE(can_manifest, 1) = 0 "
+                "AND COALESCE(is_admin, 0) = 0"
+            ))
+            db.execute(text(
+                "UPDATE users SET role = 'ADMIN' "
+                "WHERE role NOT IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'FULL_ACCESS')"
+            ))
 
+        # Pass 2: rename FULL_ACCESS → ADMIN
         db.execute(text(
-            "UPDATE users SET role = 'REPORTS_ONLY' "
-            "WHERE role NOT IN ('FULL_ACCESS', 'REPORTS_ONLY') "
-            "AND COALESCE(can_manifest, 1) = 0 "
-            "AND COALESCE(is_admin, 0) = 0"
+            "UPDATE users SET role = 'ADMIN' WHERE role = 'FULL_ACCESS'"
         ))
-        db.execute(text(
-            "UPDATE users SET role = 'FULL_ACCESS' "
-            "WHERE role NOT IN ('FULL_ACCESS', 'REPORTS_ONLY')"
-        ))
+
         logger.info("User role data migration completed.")
     except Exception as exc:
         logger.warning(f"User role migration warning: {exc}")
+
+
+def _drop_old_role_constraint(db) -> None:
+    """
+    Remove the old users.role CHECK constraint (FULL_ACCESS | REPORTS_ONLY) so
+    that subsequent data migrations can safely write 'ADMIN' or 'DISPATCH'.
+
+    PostgreSQL
+    ----------
+    Inspects pg_constraint for a CHECK constraint on users that still references
+    'FULL_ACCESS' in its definition and drops it with ALTER TABLE … DROP CONSTRAINT.
+    Idempotent — skips silently if the old constraint is already gone.
+
+    SQLite
+    ------
+    SQLite does not support ALTER TABLE … DROP CONSTRAINT.  The full fix is done
+    here in one shot via table recreation (new table with correct constraint +
+    data copy with FULL_ACCESS → ADMIN mapping + swap).  After this runs,
+    _migrate_user_roles() and _add_new_role_constraint() are safe no-ops for
+    SQLite.
+    """
+    if _is_sqlite:
+        _migrate_role_constraint_sqlite(db)
+        return
+
+    try:
+        result = db.execute(text("""
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            WHERE t.relname = 'users'
+              AND c.contype = 'c'
+              AND pg_get_constraintdef(c.oid) LIKE '%FULL_ACCESS%'
+        """))
+        row = result.fetchone()
+        if row:
+            logger.info(f"Dropping old role CHECK constraint '{row[0]}' from users table...")
+            db.execute(text(f"ALTER TABLE users DROP CONSTRAINT IF EXISTS {row[0]}"))
+    except Exception as exc:
+        logger.warning(f"Drop old role constraint warning: {exc}")
+
+
+def _migrate_role_constraint_sqlite(db) -> None:
+    """
+    SQLite-specific role constraint migration via table recreation.
+
+    SQLite offers no ALTER TABLE … DROP/ADD CONSTRAINT, so the only safe method
+    is the officially recommended pattern:
+      1. Create a replacement table with the new constraint.
+      2. Copy all rows, mapping FULL_ACCESS (and any other unknown value) → ADMIN.
+      3. Drop the old table, rename the replacement.
+
+    Foreign key enforcement is temporarily disabled during the swap.
+    Idempotent: checks sqlite_master for 'FULL_ACCESS' in the schema string and
+    skips if already migrated.
+    """
+    try:
+        row = db.execute(text(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+        )).fetchone()
+        if not row or "FULL_ACCESS" not in (row[0] or ""):
+            return  # already migrated or table does not exist
+
+        logger.info("SQLite: recreating users table to fix role CHECK constraint...")
+
+        # Discover which columns exist — varies by migration state of the DB.
+        cols = {r[1] for r in db.execute(text("PRAGMA table_info(users)")).fetchall()}
+        sa = lambda c, fb: c if c in cols else fb  # safe column accessor
+
+        db.execute(text("PRAGMA foreign_keys = OFF"))
+
+        # Replacement table carries the correct constraint.
+        db.execute(text("""
+            CREATE TABLE _users_v3 (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role          TEXT NOT NULL DEFAULT 'ADMIN'
+                              CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY')),
+                is_active     BOOLEAN DEFAULT TRUE,
+                created_at    TEXT,
+                updated_at    TEXT,
+                is_admin      INTEGER DEFAULT 0,
+                can_manifest  INTEGER DEFAULT 1
+            )
+        """))
+
+        # Copy rows; any role not in the new allowed set maps to 'ADMIN'.
+        db.execute(text(f"""
+            INSERT INTO _users_v3
+                (id, username, password_hash, role, is_active,
+                 created_at, updated_at, is_admin, can_manifest)
+            SELECT
+                id,
+                username,
+                password_hash,
+                CASE WHEN role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY')
+                     THEN role ELSE 'ADMIN' END,
+                {sa('is_active', '1')},
+                {sa('created_at', 'CURRENT_TIMESTAMP')},
+                {sa('updated_at', sa('created_at', 'CURRENT_TIMESTAMP'))},
+                {sa('is_admin', '0')},
+                {sa('can_manifest', '1')}
+            FROM users
+        """))
+
+        db.execute(text("DROP TABLE users"))
+        db.execute(text("ALTER TABLE _users_v3 RENAME TO users"))
+        db.execute(text("PRAGMA foreign_keys = ON"))
+
+        logger.info("SQLite users table recreated with new role CHECK constraint.")
+    except Exception as exc:
+        logger.warning(f"SQLite role constraint migration error: {exc}")
+        try:
+            db.execute(text("PRAGMA foreign_keys = ON"))
+        except Exception:
+            pass
+
+
+def _add_new_role_constraint(db) -> None:
+    """
+    Add the new users.role CHECK constraint (ADMIN | DISPATCH | REPORTS_ONLY)
+    after data has been cleaned up by _migrate_user_roles().
+
+    PostgreSQL
+    ----------
+    Checks pg_constraint for an existing constraint that references 'ADMIN'.
+    If none is found, verifies that every row holds a valid role value, then
+    issues ALTER TABLE … ADD CONSTRAINT.  Idempotent.
+
+    SQLite
+    ------
+    No-op — the new constraint was already embedded in the replacement table
+    created by _migrate_role_constraint_sqlite() in _drop_old_role_constraint().
+    """
+    if _is_sqlite:
+        return  # handled by _migrate_role_constraint_sqlite
+
+    try:
+        # Skip if the new constraint is already present.
+        result = db.execute(text("""
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            WHERE t.relname = 'users'
+              AND c.contype = 'c'
+              AND pg_get_constraintdef(c.oid) LIKE '%ADMIN%'
+        """))
+        if result.fetchone():
+            return  # already migrated
+
+        # Verify data is clean before adding the constraint; if any row would
+        # violate it PostgreSQL would reject the ADD CONSTRAINT entirely.
+        bad = db.execute(text(
+            "SELECT COUNT(*) FROM users "
+            "WHERE role NOT IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY')"
+        )).scalar()
+        if bad:
+            logger.warning(
+                f"Cannot add role CHECK constraint: {bad} row(s) still carry "
+                f"invalid role values.  Data migration may not have completed."
+            )
+            return
+
+        db.execute(text(
+            "ALTER TABLE users "
+            "ADD CONSTRAINT users_role_check "
+            "CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY'))"
+        ))
+        logger.info("Added new role CHECK constraint to users table.")
+    except Exception as exc:
+        logger.warning(f"Add new role constraint warning: {exc}")
 
 
 def _seed_admin(db) -> None:
@@ -467,7 +651,7 @@ def _seed_admin(db) -> None:
         db.execute(
             text(
                 "INSERT INTO users (username, password_hash, role, is_active, is_admin, can_manifest, created_at) "
-                "VALUES (:u, :p, 'FULL_ACCESS', TRUE, 1, 1, NOW())"
+                "VALUES (:u, :p, 'ADMIN', TRUE, 1, 1, NOW())"
             ),
             {"u": "admin", "p": hash_password("admin")},
         )

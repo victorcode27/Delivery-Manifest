@@ -357,11 +357,17 @@ def login(request: LoginRequest):
     try:
         user = database.verify_user(request.username, request.password)
         if user:
-            # Map legacy is_admin/can_manifest to new role system
-            if bool(user.get("is_admin")):
-                role = "FULL_ACCESS"
+            # Map legacy is_admin/can_manifest flags to current RBAC roles.
+            # Prefer the role column if it already holds a valid new-style value
+            # (i.e. the local DB has been migrated); fall back to flag mapping
+            # for older local databases that pre-date the role column.
+            _existing = user.get("role", "")
+            if _existing in ("ADMIN", "DISPATCH", "REPORTS_ONLY"):
+                role = _existing
+            elif bool(user.get("is_admin")):
+                role = "ADMIN"
             elif bool(user.get("can_manifest")):
-                role = "FULL_ACCESS"
+                role = "DISPATCH"
             else:
                 role = "REPORTS_ONLY"
 
@@ -393,8 +399,13 @@ def get_users():
         raw_users = database.get_all_users()
         users = []
         for u in raw_users:
-            if bool(u.get("is_admin")) or bool(u.get("can_manifest")):
-                role = "FULL_ACCESS"
+            _existing = u.get("role", "")
+            if _existing in ("ADMIN", "DISPATCH", "REPORTS_ONLY"):
+                role = _existing
+            elif bool(u.get("is_admin")):
+                role = "ADMIN"
+            elif bool(u.get("can_manifest")):
+                role = "DISPATCH"
             else:
                 role = "REPORTS_ONLY"
             users.append({

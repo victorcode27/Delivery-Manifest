@@ -4,14 +4,15 @@ let reports = [];
 let availableInvoices = []; // Invoices loaded from API
 let currentUser = null;
 let currentUserId = null;
-let currentUserRole = null; // 'FULL_ACCESS' or 'REPORTS_ONLY'
+let currentUserRole = null; // 'ADMIN', 'DISPATCH', or 'REPORTS_ONLY'
 let accessToken = getToken() || null;     // JWT token, restored from localStorage on page load
 let users = [];
 let loginIntent = null; // 'manifest' or 'report'
 let currentReportView = 'dispatched'; // 'dispatched' or 'outstanding'
 
 // Role constants
-const ROLE_FULL_ACCESS = 'FULL_ACCESS';
+const ROLE_ADMIN        = 'ADMIN';
+const ROLE_DISPATCH     = 'DISPATCH';
 const ROLE_REPORTS_ONLY = 'REPORTS_ONLY';
 
 // API Configuration
@@ -3150,14 +3151,14 @@ async function handleLogin() {
         const user = {
             id: data.user.id,
             username: data.user.username,
-            role: data.user.role || ROLE_FULL_ACCESS,
+            role: data.user.role || ROLE_REPORTS_ONLY,
             isActive: data.user.isActive !== false,
         };
 
         // Check permissions based on what the user intends to do
         if (loginIntent === 'manifest') {
-            if (user.role === ROLE_FULL_ACCESS) {
-                console.log('[Login] Manifest access granted (FULL_ACCESS).');
+            if (user.role === ROLE_ADMIN || user.role === ROLE_DISPATCH) {
+                console.log('[Login] Manifest access granted (role=' + user.role + ').');
                 finalizeLogin(user);
             } else {
                 console.warn('[Login] User lacks manifest permission (role=' + user.role + ').');
@@ -3185,7 +3186,7 @@ async function handleLogin() {
 async function finalizeLogin(user) {
     currentUser = user.username;
     currentUserId = user.id;
-    currentUserRole = user.role || ROLE_FULL_ACCESS;
+    currentUserRole = user.role || ROLE_REPORTS_ONLY;
     setCurrentUser(user.username);
 
 
@@ -3228,13 +3229,26 @@ function applyPermissions() {
     const resetBtn = document.getElementById('reset-btn');
     const usersTabKey = document.getElementById('tab-btn-users');
 
-    // All logged-in users can see manifest UI
-    formSections.forEach(el => el.classList.remove('guest-hidden'));
-    if (previewSection) previewSection.classList.remove('guest-hidden');
-    if (resetBtn) resetBtn.classList.remove('guest-hidden');
+    const isAdmin    = currentUserRole === ROLE_ADMIN;
+    const isDispatch = currentUserRole === ROLE_DISPATCH;
+    const canManifest = isAdmin || isDispatch;
 
-    // Settings & Users tab — FULL_ACCESS only
-    if (currentUserRole === ROLE_FULL_ACCESS) {
+    // Manifest UI — visible to ADMIN and DISPATCH only; hidden for REPORTS_ONLY
+    formSections.forEach(el => {
+        if (canManifest) el.classList.remove('guest-hidden');
+        else             el.classList.add('guest-hidden');
+    });
+    if (previewSection) {
+        if (canManifest) previewSection.classList.remove('guest-hidden');
+        else             previewSection.classList.add('guest-hidden');
+    }
+    if (resetBtn) {
+        if (canManifest) resetBtn.classList.remove('guest-hidden');
+        else             resetBtn.classList.add('guest-hidden');
+    }
+
+    // Settings & Users tab — ADMIN only
+    if (isAdmin) {
         if (settingsBtn) settingsBtn.classList.remove('guest-hidden');
         if (usersTabKey) usersTabKey.style.display = 'block';
     } else {
@@ -3323,8 +3337,10 @@ async function renderUsersList() {
             div.className = 'user-card';
 
             const isSelf = currentUserId && currentUserId === user.id;
-            const roleBadgeClass = user.role === ROLE_FULL_ACCESS ? 'full-access' : 'reports-only';
-            const roleBadgeText = user.role === ROLE_FULL_ACCESS ? 'Full Access' : 'Reports Only';
+            const roleBadgeClass = user.role === ROLE_ADMIN ? 'full-access' :
+                                   user.role === ROLE_DISPATCH ? 'dispatch' : 'reports-only';
+            const roleBadgeText = user.role === ROLE_ADMIN ? 'Admin' :
+                                  user.role === ROLE_DISPATCH ? 'Dispatch' : 'Reports Only';
             const statusClass = user.is_active ? 'active' : 'inactive';
             const statusText = user.is_active ? 'Active' : 'Inactive';
 
@@ -3339,7 +3355,8 @@ async function renderUsersList() {
                 <div class="user-card-actions">
                     ${!isSelf ? `
                         <select class="btn-sm" style="font-size:0.75rem; padding:0.3rem 0.4rem;" onchange="handleRoleChange(${user.id}, this.value, this)" title="Change role">
-                            <option value="FULL_ACCESS" ${user.role === 'FULL_ACCESS' ? 'selected' : ''}>Full Access</option>
+                            <option value="ADMIN"        ${user.role === 'ADMIN'        ? 'selected' : ''}>Admin</option>
+                            <option value="DISPATCH"     ${user.role === 'DISPATCH'     ? 'selected' : ''}>Dispatch</option>
                             <option value="REPORTS_ONLY" ${user.role === 'REPORTS_ONLY' ? 'selected' : ''}>Reports Only</option>
                         </select>
                         <label class="toggle-switch" title="${user.is_active ? 'Deactivate' : 'Activate'} user">
@@ -3401,7 +3418,7 @@ async function addUser() {
         await renderUsersList();
         nameInput.value = '';
         pwdInput.value = '';
-        roleSelect.value = ROLE_FULL_ACCESS;
+        roleSelect.value = ROLE_ADMIN;
         // Reset strength indicator
         updatePasswordStrength('', document.getElementById('new-user-pw-strength'), document.getElementById('new-user-pw-hint'));
     } catch (error) {

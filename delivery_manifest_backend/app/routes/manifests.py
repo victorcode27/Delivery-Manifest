@@ -21,7 +21,7 @@ Auth policy
         /reports/outstanding, /settings/{cat}, /trucks, /customer-routes,
         /watcher/status
 
-  Authenticated user (get_current_user):
+  ADMIN or DISPATCH (require_dispatch_or_admin):
     POST /invoices/allocate, /invoices/refresh, /invoices/manual,
          /invoices/restore, /manifest/remove, /manifests/save, /reports
     GET  /manifest/current
@@ -36,7 +36,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from delivery_manifest_backend.app.core.config import settings
-from delivery_manifest_backend.app.core.deps import get_current_user, require_admin
+from delivery_manifest_backend.app.core.deps import require_admin, require_dispatch_or_admin
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.schemas.manifest import (
     AllocateRequest,
@@ -150,7 +150,7 @@ def get_customers():
 @router.post("/invoices/allocate")
 def allocate_invoices(
     request_data: AllocateRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_dispatch_or_admin),
 ):
     """Stage invoices for a manifest (does not finalise until report is saved)."""
     try:
@@ -166,7 +166,7 @@ def allocate_invoices(
 
 
 @router.post("/invoices/refresh")
-def refresh_invoices(current_user: dict = Depends(get_current_user)):
+def refresh_invoices(current_user: dict = Depends(require_dispatch_or_admin)):
     """Trigger a re-scan of the invoice input folder."""
     try:
         manifest_service.refresh_invoices()
@@ -179,7 +179,7 @@ def refresh_invoices(current_user: dict = Depends(get_current_user)):
 @router.post("/invoices/manual")
 def add_manual_invoice(
     req: ManualInvoiceRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_dispatch_or_admin),
 ):
     """Manually add an invoice that has no PDF source."""
     try:
@@ -214,7 +214,7 @@ def search_invoices(q: str):
 @router.post("/invoices/restore")
 def restore_invoices(
     request: AllocateRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_dispatch_or_admin),
 ):
     """De-allocate invoices back to pending status."""
     try:
@@ -235,7 +235,7 @@ def restore_invoices(
 
 @router.get("/manifest/current")
 def get_current_manifest_staging(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_dispatch_or_admin),
     manifest_number: Optional[str] = None,
 ):
     try:
@@ -250,7 +250,7 @@ def get_current_manifest_staging(
 @router.post("/manifest/remove")
 def remove_from_manifest_staging(
     request_data: AllocateRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_dispatch_or_admin),
 ):
     try:
         username = current_user["username"]
@@ -296,7 +296,7 @@ def get_manifest_details(manifest_number: str):
 @router.post("/manifests/save")
 async def save_manifest_file(
     file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_dispatch_or_admin),
 ):
     """Save the generated manifest Excel file to disk."""
     try:
@@ -318,7 +318,7 @@ async def save_manifest_file(
 @router.post("/reports")
 def save_report(
     request_data: ReportRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_dispatch_or_admin),
 ):
     try:
         report_dict               = request_data.dict()

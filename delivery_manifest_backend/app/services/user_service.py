@@ -9,7 +9,7 @@ All functions receive a SQLAlchemy ``Session`` from the route layer (via
 Security rules enforced:
   • Password strength validated before hashing
   • Self-lockout prevention (cannot change own role / status)
-  • Role values constrained to FULL_ACCESS | REPORTS_ONLY
+  • Role values constrained to ADMIN | DISPATCH | REPORTS_ONLY
 """
 
 from typing import Dict, List, Optional
@@ -28,7 +28,7 @@ from delivery_manifest_backend.app.models.user import User
 
 logger = get_logger(__name__)
 
-VALID_ROLES = ("FULL_ACCESS", "REPORTS_ONLY")
+VALID_ROLES = ("ADMIN", "DISPATCH", "REPORTS_ONLY")
 
 
 # ── Read ──────────────────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ def create_user(
     db: Session,
     username: str,
     password: str,
-    role: str = "FULL_ACCESS",
+    role: str = "ADMIN",
     is_active: bool = True,
 ) -> User:
     """
