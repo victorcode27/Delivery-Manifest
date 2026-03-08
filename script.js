@@ -3052,6 +3052,7 @@ async function renderOutstandingOrders() {
 function showLandingPage() {
     const landing = document.getElementById('landing-overlay');
     if (landing) {
+        landing.style.display = '';
         landing.classList.remove('hidden');
         landing.style.opacity = '1';
         landing.style.pointerEvents = 'auto';
