@@ -656,30 +656,65 @@ function setDefaultDate() {
 }
 
 // Logic
-function addOrder() {
-    const order = {
-        id: Date.now(),
-        invoice: orderInputs.invoice.value.trim(),
-        orderNumber: orderInputs.orderNumber.value.trim() || '',
-        invoiceDate: orderInputs.invoiceDate.value || new Date().toISOString().split('T')[0],
-        customer: orderInputs.customer.value.trim(),
-        area: orderInputs.area.value.trim(),
-        sku: parseInt(orderInputs.sku.value) || 0,
-        value: parseFloat(orderInputs.value.value) || 0,
-        weight: parseFloat(orderInputs.weight.value) || 0,
-        volume: parseFloat(orderInputs.volume.value) || 0,
-        timestamp: new Date().toISOString()
-    };
+async function addOrder() {
+    const invoiceNum = orderInputs.invoice.value.trim();
+    const customer   = orderInputs.customer.value.trim();
+    const orderNum   = orderInputs.orderNumber.value.trim() || '';
+    const area       = orderInputs.area.value.trim() || 'UNKNOWN';
+    const value      = parseFloat(orderInputs.value.value) || 0;
 
-    if (!order.invoice || !order.customer) {
+    if (!invoiceNum || !customer) {
         alert('Please fill in at least Invoice Number and Customer Name.');
         return;
     }
 
-    orders.push(order);
-    clearOrderInputs();
-    saveState();
-    renderTable();
+    const btn = document.getElementById('add-order-btn');
+    btn.disabled = true;
+
+    try {
+        // Step 1: Create the invoice record in the database
+        const createResp = await apiFetch(`${API_URL}/invoices/manual`, {
+            method: 'POST',
+            body: JSON.stringify({
+                invoice_number:  invoiceNum,
+                order_number:    orderNum,
+                customer_name:   customer,
+                total_value:     String(value),
+                area:            area,
+                customer_number: 'N/A'
+            })
+        });
+
+        if (!createResp.ok) {
+            const err = await createResp.json().catch(() => ({}));
+            alert(`Failed to add invoice: ${err.detail || createResp.statusText}`);
+            return;
+        }
+
+        const { filename } = await createResp.json();
+
+        // Step 2: Stage the invoice into the current user's manifest
+        const allocResp = await apiFetch(`${API_URL}/invoices/allocate`, {
+            method: 'POST',
+            body: JSON.stringify({ filenames: [filename] })
+        });
+
+        if (!allocResp.ok) {
+            const err = await allocResp.json().catch(() => ({}));
+            alert(`Invoice saved but could not be staged: ${err.detail || allocResp.statusText}`);
+            return;
+        }
+
+        // Step 3: Refresh the manifest table from API, then clear the form
+        await renderTable();
+        clearOrderInputs();
+
+    } catch (err) {
+        console.error('Error adding order:', err);
+        alert('An unexpected error occurred. Please try again.');
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 async function removeOrder(id) {
