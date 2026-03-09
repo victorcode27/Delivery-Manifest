@@ -15,11 +15,13 @@ All manifest-domain endpoints:
 
 Auth policy
 -----------
-  Public (read-only data):
-    GET /health, /invoices, /areas, /customers, /invoices/search,
+  Public:
+    GET /health, /watcher/status
+
+  Any authenticated user (get_current_user):
+    GET /invoices, /areas, /customers, /invoices/search,
         /manifests/search/query, /manifests/{n}, /reports, /reports/dispatched,
-        /reports/outstanding, /settings/{cat}, /trucks, /customer-routes,
-        /watcher/status
+        /reports/outstanding, /settings/{cat}, /trucks, /customer-routes
 
   ADMIN or DISPATCH (require_dispatch_or_admin):
     POST /invoices/allocate, /invoices/refresh, /invoices/manual,
@@ -36,7 +38,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from delivery_manifest_backend.app.core.config import settings
-from delivery_manifest_backend.app.core.deps import require_admin, require_dispatch_or_admin
+from delivery_manifest_backend.app.core.deps import get_current_user, require_admin, require_dispatch_or_admin
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.schemas.manifest import (
     AllocateRequest,
@@ -90,6 +92,7 @@ def get_invoices(
     area:   Optional[str] = None,
     limit:  int           = 2000,
     offset: int           = 0,
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Return pending invoices not in any staging session.
@@ -130,7 +133,7 @@ def get_invoices(
 
 
 @router.get("/areas")
-def get_areas():
+def get_areas(current_user: dict = Depends(get_current_user)):
     try:
         return {"areas": sorted(manifest_service.get_areas())}
     except Exception:
@@ -139,7 +142,7 @@ def get_areas():
 
 
 @router.get("/customers")
-def get_customers():
+def get_customers(current_user: dict = Depends(get_current_user)):
     try:
         return {"customers": manifest_service.get_all_customers()}
     except Exception:
@@ -203,7 +206,7 @@ def add_manual_invoice(
 
 
 @router.get("/invoices/search")
-def search_invoices(q: str):
+def search_invoices(q: str, current_user: dict = Depends(get_current_user)):
     try:
         return {"results": manifest_service.search_orders(q)}
     except Exception:
@@ -270,7 +273,7 @@ def remove_from_manifest_staging(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/manifests/search/query")
-def search_manifests(q: str):
+def search_manifests(q: str, current_user: dict = Depends(get_current_user)):
     try:
         details = manifest_service.get_manifest_details(q)
         return {"match": True, "manifest": details} if details else {"match": False}
@@ -280,7 +283,7 @@ def search_manifests(q: str):
 
 
 @router.get("/manifests/{manifest_number}")
-def get_manifest_details(manifest_number: str):
+def get_manifest_details(manifest_number: str, current_user: dict = Depends(get_current_user)):
     try:
         details = manifest_service.get_manifest_details(manifest_number)
         if not details:
@@ -332,7 +335,7 @@ def save_report(
 
 
 @router.get("/reports")
-def get_reports(date_from: Optional[str] = None, date_to: Optional[str] = None):
+def get_reports(date_from: Optional[str] = None, date_to: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Legacy endpoint — prefer /reports/dispatched."""
     try:
         reports = manifest_service.get_reports(date_from, date_to)
@@ -353,6 +356,7 @@ def get_dispatched_invoices(
     offset:      int           = 0,
     sort_by:     str           = "date_dispatched",
     sort_order:  str           = "DESC",
+    current_user: dict = Depends(get_current_user),
 ):
     """Paginated invoice-level dispatch history."""
     try:
@@ -392,6 +396,7 @@ def get_dispatched_invoices(
 def get_outstanding_invoices(
     limit:  int = 500,
     offset: int = 0,
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Return invoices not yet included in any dispatch report.
@@ -418,7 +423,7 @@ def get_outstanding_invoices(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/settings/{category}")
-def get_settings(category: str):
+def get_settings(category: str, current_user: dict = Depends(get_current_user)):
     try:
         return {"category": category, "values": manifest_service.get_settings(category)}
     except Exception:
@@ -483,7 +488,7 @@ def delete_setting(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/trucks")
-def get_trucks():
+def get_trucks(current_user: dict = Depends(get_current_user)):
     try:
         return {"trucks": manifest_service.get_trucks()}
     except Exception:
@@ -548,7 +553,7 @@ def delete_truck(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/customer-routes")
-def get_customer_routes():
+def get_customer_routes(current_user: dict = Depends(get_current_user)):
     try:
         return {"routes": manifest_service.get_customer_routes()}
     except Exception:

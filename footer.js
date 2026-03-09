@@ -49,54 +49,48 @@ async function migrateLocalData() {
 
             // Drivers
             for (const item of data.drivers || []) {
-                await fetch(`${API_URL}/settings`, {
+                await apiFetch(`${API_URL}/settings`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ category: 'drivers', value: item })
                 });
             }
 
             // Assistants
             for (const item of data.assistants || []) {
-                await fetch(`${API_URL}/settings`, {
+                await apiFetch(`${API_URL}/settings`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ category: 'assistants', value: item })
                 });
             }
 
             // Checkers
             for (const item of data.checkers || []) {
-                await fetch(`${API_URL}/settings`, {
+                await apiFetch(`${API_URL}/settings`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ category: 'checkers', value: item })
                 });
             }
 
             // Routes
             for (const item of data.routes || []) {
-                await fetch(`${API_URL}/settings`, {
+                await apiFetch(`${API_URL}/settings`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ category: 'routes', value: item })
                 });
             }
 
             // Trucks
             for (const truck of data.trucks || []) {
-                await fetch(`${API_URL}/trucks`, {
+                await apiFetch(`${API_URL}/trucks`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(truck)
                 });
             }
 
             // Customer Routes
             for (const [customer, route] of Object.entries(data.customerRoutes || {})) {
-                await fetch(`${API_URL}/customer-routes`, {
+                await apiFetch(`${API_URL}/customer-routes`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ customer_name: customer, route_name: route })
                 });
             }
@@ -107,9 +101,8 @@ async function migrateLocalData() {
         if (savedReports) {
             const reports = JSON.parse(savedReports);
             for (const report of reports) {
-                await fetch(`${API_URL}/reports`, {
+                await apiFetch(`${API_URL}/reports`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(report)
                 });
             }

@@ -9,14 +9,6 @@ Three permission tiers (lowest → highest):
   require_dispatch_or_admin — ADMIN or DISPATCH (manifest/invoice/report writes)
   require_admin            — ADMIN only (settings, trucks, users)
 
-Transitional note
------------------
-The 'FULL_ACCESS' role was renamed to 'ADMIN' in this deploy.  Because JWTs
-are valid for 8 hours, any token issued before the migration will still carry
-role='FULL_ACCESS'.  Both require_admin and require_dispatch_or_admin accept
-'FULL_ACCESS' as equivalent to 'ADMIN' for one deploy cycle, after which that
-transitional acceptance should be removed.
-
 Usage in a route::
 
     from app.core.deps import get_current_user, require_dispatch_or_admin, require_admin
@@ -98,12 +90,9 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
 def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     """
     Raises 403 unless the caller has ADMIN role.
-
-    Transitional: also accepts the legacy FULL_ACCESS role for one deploy
-    cycle (8-hour JWT TTL) until all existing tokens have expired.
     """
     role = current_user.get("role", "")
-    if role not in ("ADMIN", "FULL_ACCESS"):
+    if role not in ("ADMIN",):
         logger.warning(
             f"Admin access denied for user '{current_user.get('username')}' (role={role})"
         )
@@ -120,12 +109,9 @@ def require_dispatch_or_admin(current_user: dict = Depends(get_current_user)) ->
 
     Covers all manifest / invoice / report write operations that REPORTS_ONLY
     users must not perform.
-
-    Transitional: also accepts the legacy FULL_ACCESS role for one deploy
-    cycle (8-hour JWT TTL) until all existing tokens have expired.
     """
     role = current_user.get("role", "")
-    if role not in ("ADMIN", "DISPATCH", "FULL_ACCESS"):
+    if role not in ("ADMIN", "DISPATCH"):
         logger.warning(
             f"Dispatch/Admin access denied for user '{current_user.get('username')}' (role={role})"
         )
