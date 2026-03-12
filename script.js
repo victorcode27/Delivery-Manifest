@@ -1976,17 +1976,17 @@ function renderSettingsList(category) {
         return;
     }
 
-    // Rewrite using simpler string concat
     let html = '';
     items.forEach((item, index) => {
-        // Handle special chars by simple escaping if needed, but names are usually safe
-        // Using onclick attributes for simplicity as requested by user's "rewrite" preference
         html += `
         <div class="settings-item">
             <div class="settings-item-info">
                 <span class="settings-item-name">${item}</span>
             </div>
             <div class="settings-item-actions">
+                <button class="btn-icon btn-edit" onclick="editSettingsItem('${category}', ${index})" title="Edit">
+                    <i data-lucide="pencil"></i>
+                </button>
                 <button class="btn-icon btn-delete" onclick="removeSettingsItem('${category}', ${index})" title="Delete">
                     <i data-lucide="trash-2"></i>
                 </button>
@@ -1996,10 +1996,77 @@ function renderSettingsList(category) {
     });
 
     listEl.innerHTML = html;
+    lucide.createIcons();
 }
 
-// Editing functionality removed for simplicity as per rewrite request.
-// To re-enable, implement specific edit modals or inline editing here.
+function editSettingsItem(category, index) {
+    const currentValue = settingsData[category][index];
+    const listEl = document.getElementById(`${category}-list`);
+    const itemEl = listEl.querySelectorAll('.settings-item')[index];
+
+    itemEl.innerHTML = `
+        <div class="settings-edit-form">
+            <input type="text" id="edit-setting-${category}-${index}" value="${currentValue.replace(/"/g, '&quot;')}" style="flex:1;">
+            <div class="settings-edit-actions">
+                <button class="btn btn-primary btn-sm" onclick="saveSettingsEdit('${category}', ${index})">
+                    <i data-lucide="check"></i> Save
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="cancelSettingsEdit('${category}')">
+                    <i data-lucide="x"></i> Cancel
+                </button>
+            </div>
+        </div>
+    `;
+
+    lucide.createIcons();
+    const input = document.getElementById(`edit-setting-${category}-${index}`);
+    input.focus();
+    input.select();
+}
+
+async function saveSettingsEdit(category, index) {
+    const oldValue = settingsData[category][index];
+    const input = document.getElementById(`edit-setting-${category}-${index}`);
+    const newValue = input.value.trim();
+
+    if (!newValue) {
+        alert('Name cannot be empty.');
+        input.focus();
+        return;
+    }
+
+    if (newValue === oldValue) {
+        // No change — just exit edit mode without an API call
+        renderSettingsList(category);
+        return;
+    }
+
+    try {
+        const response = await apiFetch(`${API_URL}/settings`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ category, old_value: oldValue, new_value: newValue })
+        });
+
+        if (response.ok) {
+            settingsData[category][index] = newValue;
+            renderSettingsList(category);
+            if (['drivers', 'assistants', 'checkers'].includes(category)) {
+                populateTruckFormDropdowns();
+            }
+        } else {
+            const err = await response.json().catch(() => ({}));
+            alert(err.detail || 'Failed to update. The name may already exist.');
+        }
+    } catch (e) {
+        console.error(e);
+        alert('Server error updating setting.');
+    }
+}
+
+function cancelSettingsEdit(category) {
+    renderSettingsList(category);
+}
 
 async function addTruck() {
     const regInput = document.getElementById('new-truck-reg');

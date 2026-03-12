@@ -12,15 +12,21 @@ Business logic for the manifest domain:
 
 import os
 import secrets
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from delivery_manifest_backend.app.db.database import get_db_session, execute_query
 from delivery_manifest_backend.app.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Serialises invoice‐import operations so the file watcher and the manual
+# refresh endpoint cannot process the same folder concurrently.
+_import_lock = threading.Lock()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -285,9 +291,25 @@ def reconcile_all_orphans() -> int:
 
 
 def add_order(order_data: Dict) -> bool:
-    """Insert a new order.  Returns False on duplicate filename."""
+    """Insert a new order.  Returns False on duplicate filename or invoice_number."""
+    inv_num = order_data.get("invoice_number", "N/A")
     db = get_db_session()
     try:
+        # Pre-check: skip if this invoice_number already exists in the DB.
+        # The partial unique index enforces this at the DB level too, but the
+        # pre-check produces a clearer log message and avoids the INSERT round-trip.
+        if inv_num and inv_num != "N/A":
+            existing = db.execute(
+                text("SELECT 1 FROM orders WHERE invoice_number = :inv"),
+                {"inv": inv_num},
+            ).fetchone()
+            if existing:
+                logger.info(
+                    f"[SKIP] Invoice {inv_num} already in DB — "
+                    f"skipping file {order_data.get('filename')}"
+                )
+                return False
+
         execute_query(
             db,
             """
@@ -318,7 +340,6 @@ def add_order(order_data: Dict) -> bool:
         # Post-import hook: if this is a new invoice, immediately reconcile any
         # ORPHAN credit notes that arrived before it and have been waiting.
         if order_data.get("type", "INVOICE") == "INVOICE":
-            inv_num = order_data.get("invoice_number", "N/A")
             if inv_num and inv_num != "N/A":
                 _reconcile_orphans_for_invoice(inv_num)
 
@@ -1142,11 +1163,16 @@ def save_manifest_file(content: bytes, filename: str, folder: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def refresh_invoices() -> None:
-    """Trigger a re-scan of the invoice input folder via the invoice processor."""
-    import importlib
-    import invoice_processor  # optional dependency; ImportError propagates to caller
-    importlib.reload(invoice_processor)
-    invoice_processor.main()
+    """Trigger a re-scan of the invoice input folder via the invoice processor.
+
+    Acquires ``_import_lock`` so the file watcher cannot process files
+    concurrently (the ``importlib.reload`` is not thread-safe).
+    """
+    with _import_lock:
+        import importlib
+        import invoice_processor  # optional dependency; ImportError propagates to caller
+        importlib.reload(invoice_processor)
+        invoice_processor.main()
 
 
 def create_manual_invoice(

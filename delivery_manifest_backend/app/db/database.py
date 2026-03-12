@@ -320,10 +320,10 @@ def _create_tables(db) -> None:
         db.execute(text(ddl.strip()))
 
     # ── Column-level migrations (add columns that may not exist yet) ──────────
-    _run_migrations(db)
+    has_duplicates = _run_migrations(db)
 
     # ── Performance indexes ───────────────────────────────────────────────────
-    _create_indexes(db)
+    _create_indexes(db, skip_unique_invoice=(has_duplicates or False))
 
 
 def _column_exists(db, table: str, column: str) -> bool:
@@ -376,8 +376,12 @@ def _run_migrations(db) -> None:
     _migrate_user_roles(db)
     _add_new_role_constraint(db)
 
+    # ── Check for duplicate invoice_numbers (log only — never auto-delete) ──
+    # Returns True when duplicates exist → unique index must be deferred.
+    return _check_duplicate_invoices(db)
 
-def _create_indexes(db) -> None:
+
+def _create_indexes(db, *, skip_unique_invoice: bool = False) -> None:
     """
     Create performance indexes using IF NOT EXISTS — safe to re-run on every
     startup.  Skips silently if an index already exists or the table is not yet
@@ -386,6 +390,11 @@ def _create_indexes(db) -> None:
     Indexes are chosen for columns used in WHERE, JOIN, ORDER BY, or subqueries
     across the manifest and invoice flows.  Existing UNIQUE / PK indexes are not
     duplicated.
+
+    When *skip_unique_invoice* is True the partial UNIQUE index on
+    ``orders(invoice_number)`` is **not** created — this happens when startup
+    detected duplicate invoice_number rows that must be cleaned up manually
+    first.
     """
     indexes = [
         # orders — every list query filters on these columns
@@ -429,6 +438,89 @@ def _create_indexes(db) -> None:
             db.execute(text(ddl))
         except Exception as exc:
             logger.warning(f"Index creation skipped ({name}): {exc}")
+
+    # ── Partial UNIQUE index on invoice_number ────────────────────────────
+    # Only created when the table has no duplicate invoice_numbers.
+    # If duplicates exist, _check_duplicate_invoices() logs full detail and
+    # this index is deferred until manual cleanup + restart.
+    if skip_unique_invoice:
+        logger.warning(
+            "[Index] Skipping idx_orders_unique_invoice_number — "
+            "resolve duplicate invoice_numbers first, then restart."
+        )
+    else:
+        try:
+            db.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_unique_invoice_number "
+                "ON orders(invoice_number) WHERE invoice_number != 'N/A'"
+            ))
+        except Exception as exc:
+            logger.warning(f"Index creation skipped (idx_orders_unique_invoice_number): {exc}")
+
+
+def _check_duplicate_invoices(db) -> bool:
+    """
+    Detect and log duplicate invoice_number rows.  **Never deletes anything.**
+
+    Returns True if duplicates exist (unique index must NOT be created),
+    False if the table is clean (safe to create the unique index).
+
+    When duplicates are found the log output includes enough detail for a
+    manual cleanup decision:
+        invoice_number, id, filename, date_processed, status,
+        whether the row is referenced in manifest_staging or report_items.
+    """
+    try:
+        detail = db.execute(text("""
+            SELECT o.invoice_number, o.id, o.filename, o.date_processed,
+                   o.status,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM manifest_staging ms WHERE ms.invoice_id = o.id
+                   ) THEN 'STAGING' ELSE '' END  AS in_staging,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM report_items ri
+                       WHERE ri.invoice_number = o.invoice_number
+                   ) THEN 'REPORTED' ELSE '' END  AS in_reports
+            FROM orders o
+            WHERE o.invoice_number IN (
+                SELECT invoice_number
+                FROM orders
+                WHERE invoice_number != 'N/A'
+                GROUP BY invoice_number
+                HAVING COUNT(*) > 1
+            )
+            ORDER BY o.invoice_number, o.id
+        """)).fetchall()
+
+        if not detail:
+            logger.info("[Dedup] No duplicate invoice_numbers found — table is clean.")
+            return False
+
+        # ── Count distinct duplicate groups ──
+        dup_invoices = set()
+        for row in detail:
+            dup_invoices.add(row[0])
+
+        logger.warning(
+            f"[Dedup] {len(dup_invoices)} duplicate invoice_number group(s) found "
+            f"({len(detail)} total rows).  UNIQUE INDEX WILL NOT BE CREATED until "
+            f"duplicates are resolved manually."
+        )
+        logger.warning("[Dedup] Duplicate detail (review before cleanup):")
+        for row in detail:
+            logger.warning(
+                f"  invoice={row[0]}  id={row[1]}  file={row[2]}  "
+                f"processed={row[3]}  status={row[4]}  {row[5]}  {row[6]}"
+            )
+        logger.warning(
+            "[Dedup] Run the manual cleanup SQL documented in the migration notes, "
+            "then restart the application to create the unique index."
+        )
+        return True
+
+    except Exception as exc:
+        logger.warning(f"[Dedup] Error checking for duplicates: {exc}")
+        return True  # assume dirty — do not create unique index
 
 
 def _migrate_user_roles(db) -> None:

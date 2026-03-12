@@ -295,6 +295,8 @@ def main():
         return
     
     # --- AUTO-CLEANUP: Remove records with verified BAD data so they can be re-scanned ---
+    # Safety: only delete rows NOT referenced in report_items (already dispatched
+    # invoices must never be silently removed, even if their data was bad).
     db = get_db_session()
     try:
         bad_values = ["USD", "ZIG", "ZWG", "LOIUSE", "LOUISE"]
@@ -303,8 +305,14 @@ def main():
         params = {f'bad_{i}': val for i, val in enumerate(bad_values)}
         placeholders = ','.join([f':bad_{i}' for i in range(len(bad_values))])
 
-        # Delete orders where order_number is in the bad list
-        result = db.execute(text(f"DELETE FROM orders WHERE order_number IN ({placeholders})"), params)
+        # Delete orders where order_number is in the bad list AND not dispatched
+        result = db.execute(text(
+            f"DELETE FROM orders WHERE order_number IN ({placeholders}) "
+            f"AND NOT EXISTS ("
+            f"  SELECT 1 FROM report_items ri "
+            f"  WHERE ri.invoice_number = orders.invoice_number"
+            f")"
+        ), params)
         deleted_count = result.rowcount
         if deleted_count > 0:
             logger.info(f"Cleaned up {deleted_count} records with bad Order Numbers (USD/Names). They will be re-scanned.")

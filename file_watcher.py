@@ -119,26 +119,39 @@ class FileWatcher:
             return set()
     
     def initialize_known_files(self):
-        """Initialize the set of known files (files already present when starting)."""
+        """Seed known_files from the DB — only files already imported are 'known'.
+
+        Files in the folder but NOT in the database are left out so they will
+        be picked up on the next poll cycle.  The DB unique constraints
+        (filename + invoice_number) guarantee that re-processing is safe.
+        """
         logger.info("Initializing known files...")
-        
+
         # Get all current PDFs
         current_files = self.scan_folder()
-        
-        # Import database to check which files are already processed
+
+        # Query ALL filenames in the DB (includes credit notes)
         import database
         database.init_db()
-        
-        all_orders = database.get_all_orders(allocated=True) + database.get_all_orders(allocated=False)
-        processed_filenames = {order.get("filename") for order in all_orders}
-        
-        # Mark all existing files as known
+        from database import get_db_session
+        from sqlalchemy import text
+
+        db = get_db_session()
+        try:
+            result = db.execute(text("SELECT filename FROM orders"))
+            processed_filenames = {row[0] for row in result.fetchall()}
+        finally:
+            db.close()
+
+        # Only mark folder files as known if they are already in the DB
         for file_path in current_files:
-            self.known_files.add(file_path.name)
-        
+            if file_path.name in processed_filenames:
+                self.known_files.add(file_path.name)
+
+        missed = len(current_files) - len(self.known_files)
         logger.info(f"Found {len(current_files)} existing PDF files")
         logger.info(f"Database contains {len(processed_filenames)} processed files")
-        logger.info("File watcher initialized. Only NEW files will be processed.")
+        logger.info(f"{missed} file(s) in folder but not in DB — will be processed.")
     
     def process_new_file(self, file_path: Path):
         """Process a newly detected and stable file."""

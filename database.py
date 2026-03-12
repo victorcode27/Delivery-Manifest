@@ -294,12 +294,25 @@ def cancel_order(invoice_number: str) -> bool:
         return False
 
 def add_order(order_data: Dict) -> bool:
-    """Add a new order/credit note to the database. Returns True if successful."""
+    """Add a new order/credit note to the database. Returns True if successful,
+    False on duplicate filename or invoice_number."""
+    inv_num = order_data.get('invoice_number', 'N/A')
     db = SessionLocal()
-    
+
     try:
+        # Pre-check: skip if this invoice_number already exists in the DB
+        if inv_num and inv_num != 'N/A':
+            existing = db.execute(
+                text("SELECT 1 FROM orders WHERE invoice_number = :inv"),
+                {"inv": inv_num},
+            ).fetchone()
+            if existing:
+                print(f"[SKIP] Invoice {inv_num} already in DB — skipping {order_data.get('filename')}")
+                db.close()
+                return False
+
         result = execute_sqlite_wrapper(db, '''
-            INSERT INTO orders (filename, date_processed, customer_name, total_value, 
+            INSERT INTO orders (filename, date_processed, customer_name, total_value,
                               order_number, invoice_number, invoice_date, area,
                               type, reference_number, original_value, status, customer_number)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -309,7 +322,7 @@ def add_order(order_data: Dict) -> bool:
             order_data.get('customer_name', 'Unknown'),
             order_data.get('total_value', '0.00'),
             order_data.get('order_number', 'N/A'),
-            order_data.get('invoice_number', 'N/A'),
+            inv_num,
             order_data.get('invoice_date', 'N/A'),
             order_data.get('area', 'UNKNOWN'),
             order_data.get('type', 'INVOICE'),
@@ -322,7 +335,7 @@ def add_order(order_data: Dict) -> bool:
         db.close()
         return True
     except IntegrityError:
-        # Duplicate filename
+        # Duplicate filename or invoice_number
         db.close()
         return False
 

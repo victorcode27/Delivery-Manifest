@@ -93,42 +93,66 @@ class FileWatcher:
     # ── Initialisation ────────────────────────────────────────────────────────
 
     def _init_known_files(self) -> None:
-        """Seed known_files from the current folder so we only process NEW files."""
-        from delivery_manifest_backend.app.services.manifest_service import get_all_orders
-        from delivery_manifest_backend.app.db.database import init_db
+        """Seed known_files from the DB — only files already imported are 'known'.
+
+        Files present in the folder but NOT yet in the database are left out
+        of ``known_files`` so they will be picked up on the next poll cycle.
+        This ensures files that arrived while the watcher was down are never
+        silently lost — and the DB-level unique index on ``invoice_number``
+        guarantees that re-processing a file whose invoice is already stored
+        is a safe no-op.
+        """
+        from delivery_manifest_backend.app.db.database import init_db, get_db_session
+        from sqlalchemy import text
 
         init_db()
-        all_orders = get_all_orders(allocated=True) + get_all_orders(allocated=False)
-        processed  = {o.get("filename") for o in all_orders}
+        db = get_db_session()
+        try:
+            result = db.execute(text("SELECT filename FROM orders"))
+            processed = {row[0] for row in result.fetchall()}
+        finally:
+            db.close()
 
-        for fp in self.scan_folder():
-            self.known_files.add(fp.name)
+        folder_files = self.scan_folder()
+        for fp in folder_files:
+            if fp.name in processed:
+                self.known_files.add(fp.name)
 
+        missed = len(folder_files) - len(self.known_files)
         logger.info(
-            f"Watcher initialised: {len(self.known_files)} folder PDFs, "
-            f"{len(processed)} already in DB."
+            f"Watcher initialised: {len(folder_files)} folder PDFs, "
+            f"{len(self.known_files)} already in DB, "
+            f"{missed} new file(s) pending."
         )
 
     # ── Process a new file ────────────────────────────────────────────────────
 
     def _process_file(self, file_path: Path) -> bool:
-        """Extract invoice data and save it to the database."""
+        """Extract invoice data and save it to the database.
+
+        Acquires the shared ``_import_lock`` so this cannot run concurrently
+        with ``refresh_invoices()`` (which reloads the invoice_processor module).
+        """
         try:
-            import invoice_processor  # type: ignore  (lives in the legacy root)
+            from delivery_manifest_backend.app.services.manifest_service import (
+                _import_lock,
+                add_order,
+            )
 
-            invoice_data = invoice_processor.extract_invoice_data(str(file_path))
-            if not invoice_data:
-                logger.error(f"[SKIP] No data extracted from {file_path.name}")
-                return False
+            with _import_lock:
+                import invoice_processor  # type: ignore  (lives in the legacy root)
 
-            from delivery_manifest_backend.app.services.manifest_service import add_order
+                invoice_data = invoice_processor.extract_invoice_data(str(file_path))
+                if not invoice_data:
+                    logger.error(f"[SKIP] No data extracted from {file_path.name}")
+                    return False
 
-            ok = add_order(invoice_data)
-            if ok:
-                logger.info(f"[ADDED] {invoice_data['customer_name']} — {file_path.name}")
-            else:
-                logger.warning(f"[DUPLICATE] {file_path.name}")
-            return ok
+                ok = add_order(invoice_data)
+                if ok:
+                    logger.info(f"[ADDED] {invoice_data['customer_name']} — {file_path.name}")
+                else:
+                    logger.warning(f"[DUPLICATE] {file_path.name}")
+                return ok
         except Exception:
             logger.error(f"Error processing {file_path.name}", exc_info=True)
             return False
