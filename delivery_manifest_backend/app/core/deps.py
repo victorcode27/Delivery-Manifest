@@ -3,22 +3,28 @@ app/core/deps.py
 
 FastAPI dependency helpers for JWT authentication.
 
-Three permission tiers (lowest → highest):
+Permission tiers (lowest → highest):
 
-  get_current_user         — any authenticated, active user
+  get_current_user          — any authenticated, active user
+  require_delivery_access   — DRIVER, ADMIN, or DISPATCH (delivery execution)
   require_dispatch_or_admin — ADMIN or DISPATCH (manifest/invoice/report writes)
-  require_admin            — ADMIN only (settings, trucks, users)
+  require_office            — ADMIN or DISPATCH (office-side delivery oversight)
+  require_admin             — ADMIN only (settings, trucks, users)
+  require_driver            — DRIVER only (field-driver-exclusive endpoints)
 
 Usage in a route::
 
-    from app.core.deps import get_current_user, require_dispatch_or_admin, require_admin
+    from app.core.deps import (
+        get_current_user, require_dispatch_or_admin, require_admin,
+        require_driver, require_office, require_delivery_access,
+    )
 
     @router.post("/invoices/allocate")
     def allocate(user: dict = Depends(require_dispatch_or_admin)):
         ...
 
-    @router.post("/settings")
-    def add_setting(user: dict = Depends(require_admin)):
+    @router.get("/delivery/manifests")
+    def list_manifests(user: dict = Depends(require_delivery_access)):
         ...
 """
 
@@ -118,5 +124,61 @@ def require_dispatch_or_admin(current_user: dict = Depends(get_current_user)) ->
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Manifest access required",
+        )
+    return current_user
+
+
+def require_driver(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    Raises 403 unless the caller has DRIVER role.
+
+    Reserved for endpoints that are exclusively for field drivers.
+    """
+    role = current_user.get("role", "")
+    if role not in ("DRIVER",):
+        logger.warning(
+            f"Driver access denied for user '{current_user.get('username')}' (role={role})"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Driver access required",
+        )
+    return current_user
+
+
+def require_office(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    Raises 403 unless the caller has ADMIN or DISPATCH role.
+
+    Covers office-side delivery oversight operations (e.g. viewing full audit
+    trails) that field drivers must not access.
+    """
+    role = current_user.get("role", "")
+    if role not in ("ADMIN", "DISPATCH"):
+        logger.warning(
+            f"Office access denied for user '{current_user.get('username')}' (role={role})"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Office access required",
+        )
+    return current_user
+
+
+def require_delivery_access(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    Raises 403 unless the caller has DRIVER, ADMIN, or DISPATCH role.
+
+    REPORTS_ONLY users are explicitly excluded — they have no role in the
+    delivery execution workflow.
+    """
+    role = current_user.get("role", "")
+    if role not in ("DRIVER", "ADMIN", "DISPATCH"):
+        logger.warning(
+            f"Delivery access denied for user '{current_user.get('username')}' (role={role})"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Delivery access required",
         )
     return current_user

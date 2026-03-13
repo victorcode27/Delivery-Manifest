@@ -26,7 +26,7 @@ class LoginResponse(BaseModel):
 
 # ── User CRUD ─────────────────────────────────────────────────────────────────
 
-VALID_ROLES = ("ADMIN", "DISPATCH", "REPORTS_ONLY")
+VALID_ROLES = ("ADMIN", "DISPATCH", "REPORTS_ONLY", "DRIVER")
 
 
 class UserCreate(BaseModel):

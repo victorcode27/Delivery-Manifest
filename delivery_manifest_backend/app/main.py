@@ -19,7 +19,7 @@ from delivery_manifest_backend.app.core.config import settings
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.db.database import init_db
 import delivery_manifest_backend.app.models  # noqa: F401 – registers all ORM classes before configure_mappers()
-from delivery_manifest_backend.app.routes import auth, manifests, users
+from delivery_manifest_backend.app.routes import auth, delivery, manifests, users
 from delivery_manifest_backend.app.tasks.pod_tasks import start_watcher, stop_watcher
 from delivery_manifest_backend.app.tasks.cleanup_tasks import start_cleanup, stop_cleanup
 from delivery_manifest_backend.app.services.manifest_service import reconcile_all_orphans
@@ -60,6 +60,7 @@ app.add_middleware(
 app.include_router(auth.router,      prefix="/api")
 app.include_router(users.router,     prefix="/api")
 app.include_router(manifests.router, prefix="/api")
+app.include_router(delivery.router,  prefix="/api")
 
 # ── Lifecycle events ──────────────────────────────────────────────────────────
 

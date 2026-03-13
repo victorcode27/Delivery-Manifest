@@ -204,7 +204,7 @@ def _create_tables(db) -> None:
             username      TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             role          TEXT NOT NULL DEFAULT 'ADMIN'
-                          CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY')),
+                          CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER')),
             is_active     BOOLEAN DEFAULT TRUE,
             created_at    TIMESTAMPTZ DEFAULT NOW(),
             updated_at    TIMESTAMPTZ DEFAULT NOW(),
@@ -314,6 +314,47 @@ def _create_tables(db) -> None:
         CREATE INDEX IF NOT EXISTS idx_staging_session
         ON manifest_staging(session_id)
         """,
+        # ── delivery_updates ──────────────────────────────────────────────────
+        """
+        CREATE TABLE IF NOT EXISTS delivery_updates (
+            id               SERIAL PRIMARY KEY,
+            report_item_id   INTEGER NOT NULL UNIQUE,
+            invoice_number   TEXT NOT NULL,
+            manifest_number  TEXT NOT NULL,
+            driver_user_id   INTEGER,
+            driver_name      TEXT,
+            status           TEXT NOT NULL DEFAULT 'PENDING'
+                             CHECK (status IN (
+                                 'PENDING','IN_TRANSIT','DELIVERED',
+                                 'FAILED','PARTIAL','RETURNED'
+                             )),
+            notes            TEXT,
+            pod_image_path   TEXT,
+            signature_path   TEXT,
+            updated_at       TIMESTAMPTZ DEFAULT NOW(),
+            FOREIGN KEY (report_item_id) REFERENCES report_items(id) ON DELETE CASCADE,
+            FOREIGN KEY (driver_user_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+        """,
+        # ── delivery_events ───────────────────────────────────────────────────
+        """
+        CREATE TABLE IF NOT EXISTS delivery_events (
+            id                  SERIAL PRIMARY KEY,
+            delivery_update_id  INTEGER NOT NULL,
+            report_item_id      INTEGER NOT NULL,
+            manifest_number     TEXT NOT NULL,
+            invoice_number      TEXT NOT NULL,
+            status              TEXT NOT NULL,
+            notes               TEXT,
+            pod_image_path      TEXT,
+            signature_path      TEXT,
+            changed_by_user_id  INTEGER,
+            changed_by_username TEXT,
+            event_at            TIMESTAMPTZ DEFAULT NOW(),
+            FOREIGN KEY (delivery_update_id) REFERENCES delivery_updates(id) ON DELETE CASCADE,
+            FOREIGN KEY (changed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+        """,
     ]
 
     for ddl in ddl_statements:
@@ -357,6 +398,9 @@ def _run_migrations(db) -> None:
         ("users", "role",      "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'ADMIN'"),
         # User model v3 — updated_at timestamp
         ("users", "updated_at", "ALTER TABLE users ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW()"),
+        # Delivery tracking v1 — link a driver account to a dispatched report
+        ("reports", "driver_user_id",
+         "ALTER TABLE reports ADD COLUMN driver_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"),
     ]
     for table, column, sql in migrations:
         try:
@@ -431,6 +475,16 @@ def _create_indexes(db, *, skip_unique_invoice: bool = False) -> None:
         # manifest_events.manifest_number — audit log lookup per manifest
         ("idx_events_manifest_number",
          "CREATE INDEX IF NOT EXISTS idx_events_manifest_number ON manifest_events(manifest_number)"),
+        # delivery_updates — manifest filter and driver filter
+        ("idx_du_manifest",
+         "CREATE INDEX IF NOT EXISTS idx_du_manifest ON delivery_updates(manifest_number)"),
+        ("idx_du_driver",
+         "CREATE INDEX IF NOT EXISTS idx_du_driver ON delivery_updates(driver_user_id)"),
+        # delivery_events — join and manifest filter
+        ("idx_de_update",
+         "CREATE INDEX IF NOT EXISTS idx_de_update ON delivery_events(delivery_update_id)"),
+        ("idx_de_manifest",
+         "CREATE INDEX IF NOT EXISTS idx_de_manifest ON delivery_events(manifest_number)"),
     ]
 
     for name, ddl in indexes:
@@ -543,13 +597,13 @@ def _migrate_user_roles(db) -> None:
         if _column_exists(db, "users", "can_manifest"):
             db.execute(text(
                 "UPDATE users SET role = 'REPORTS_ONLY' "
-                "WHERE role NOT IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'FULL_ACCESS') "
+                "WHERE role NOT IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER', 'FULL_ACCESS') "
                 "AND COALESCE(can_manifest, 1) = 0 "
                 "AND COALESCE(is_admin, 0) = 0"
             ))
             db.execute(text(
                 "UPDATE users SET role = 'ADMIN' "
-                "WHERE role NOT IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'FULL_ACCESS')"
+                "WHERE role NOT IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER', 'FULL_ACCESS')"
             ))
 
         # Pass 2: rename FULL_ACCESS → ADMIN
@@ -592,11 +646,15 @@ def _drop_old_role_constraint(db) -> None:
             JOIN pg_class t ON c.conrelid = t.oid
             WHERE t.relname = 'users'
               AND c.contype = 'c'
-              AND pg_get_constraintdef(c.oid) LIKE '%FULL_ACCESS%'
+              AND pg_get_constraintdef(c.oid) NOT LIKE '%DRIVER%'
+              AND (
+                  pg_get_constraintdef(c.oid) LIKE '%FULL_ACCESS%'
+                  OR pg_get_constraintdef(c.oid) LIKE '%ADMIN%'
+              )
         """))
         row = result.fetchone()
         if row:
-            logger.info(f"Dropping old role CHECK constraint '{row[0]}' from users table...")
+            logger.info(f"Dropping outdated role CHECK constraint '{row[0]}' from users table...")
             db.execute(text(f"ALTER TABLE users DROP CONSTRAINT IF EXISTS {row[0]}"))
     except Exception as exc:
         logger.warning(f"Drop old role constraint warning: {exc}")
@@ -620,10 +678,11 @@ def _migrate_role_constraint_sqlite(db) -> None:
         row = db.execute(text(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
         )).fetchone()
-        if not row or "FULL_ACCESS" not in (row[0] or ""):
-            return  # already migrated or table does not exist
+        schema_sql = row[0] or "" if row else ""
+        if not row or ("DRIVER" in schema_sql and "FULL_ACCESS" not in schema_sql):
+            return  # already up-to-date or table does not exist
 
-        logger.info("SQLite: recreating users table to fix role CHECK constraint...")
+        logger.info("SQLite: recreating users table to update role CHECK constraint...")
 
         # Discover which columns exist — varies by migration state of the DB.
         cols = {r[1] for r in db.execute(text("PRAGMA table_info(users)")).fetchall()}
@@ -638,7 +697,7 @@ def _migrate_role_constraint_sqlite(db) -> None:
                 username      TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 role          TEXT NOT NULL DEFAULT 'ADMIN'
-                              CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY')),
+                              CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER')),
                 is_active     BOOLEAN DEFAULT TRUE,
                 created_at    TEXT,
                 updated_at    TEXT,
@@ -656,7 +715,7 @@ def _migrate_role_constraint_sqlite(db) -> None:
                 id,
                 username,
                 password_hash,
-                CASE WHEN role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY')
+                CASE WHEN role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER')
                      THEN role ELSE 'ADMIN' END,
                 {sa('is_active', '1')},
                 {sa('created_at', 'CURRENT_TIMESTAMP')},
@@ -699,23 +758,23 @@ def _add_new_role_constraint(db) -> None:
         return  # handled by _migrate_role_constraint_sqlite
 
     try:
-        # Skip if the new constraint is already present.
+        # Skip if a constraint already includes DRIVER (fully up-to-date).
         result = db.execute(text("""
             SELECT 1
             FROM pg_constraint c
             JOIN pg_class t ON c.conrelid = t.oid
             WHERE t.relname = 'users'
               AND c.contype = 'c'
-              AND pg_get_constraintdef(c.oid) LIKE '%ADMIN%'
+              AND pg_get_constraintdef(c.oid) LIKE '%DRIVER%'
         """))
         if result.fetchone():
-            return  # already migrated
+            return  # already includes DRIVER role
 
         # Verify data is clean before adding the constraint; if any row would
         # violate it PostgreSQL would reject the ADD CONSTRAINT entirely.
         bad = db.execute(text(
             "SELECT COUNT(*) FROM users "
-            "WHERE role NOT IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY')"
+            "WHERE role NOT IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER')"
         )).scalar()
         if bad:
             logger.warning(
@@ -727,9 +786,9 @@ def _add_new_role_constraint(db) -> None:
         db.execute(text(
             "ALTER TABLE users "
             "ADD CONSTRAINT users_role_check "
-            "CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY'))"
+            "CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER'))"
         ))
-        logger.info("Added new role CHECK constraint to users table.")
+        logger.info("Added role CHECK constraint (includes DRIVER) to users table.")
     except Exception as exc:
         logger.warning(f"Add new role constraint warning: {exc}")
 
