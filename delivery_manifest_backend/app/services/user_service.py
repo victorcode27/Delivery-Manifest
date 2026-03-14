@@ -28,7 +28,7 @@ from delivery_manifest_backend.app.models.user import User
 
 logger = get_logger(__name__)
 
-VALID_ROLES = ("ADMIN", "DISPATCH", "REPORTS_ONLY")
+VALID_ROLES = ("ADMIN", "DISPATCH", "REPORTS_ONLY", "DRIVER")
 
 
 # ── Read ──────────────────────────────────────────────────────────────────────
