@@ -40,6 +40,10 @@
                 <button id="outstanding-orders-btn" class="btn btn-secondary">
                     <i data-lucide="alert-circle"></i> Outstanding Orders
                 </button>
+                <button id="delivery-status-btn" class="btn btn-secondary"
+                        onclick="window.location.href='delivery_status.html'">
+                    <i data-lucide="map-pin"></i> Delivery Status
+                </button>
                 <button id="view-reports-btn" class="btn btn-secondary">
                     <i data-lucide="file-bar-chart-2"></i> View Reports
                 </button>
@@ -576,7 +580,7 @@
                 <div class="settings-tab-content" id="tab-users">
                     <div class="settings-info-text">
                         <i data-lucide="shield"></i>
-                        <span>Manage users and access levels. <strong>Admin</strong> = all features. <strong>Dispatch</strong> = manifest ops, no admin. <strong>Reports Only</strong> = view reports only.</span>
+                        <span>Manage users and access levels. <strong>Admin</strong> = all features. <strong>Dispatch</strong> = manifest ops, no admin. <strong>Reports Only</strong> = view reports only. <strong>Driver</strong> = mobile app delivery tracking only.</span>
                     </div>
 
                     <!-- Add User Form -->
@@ -599,6 +603,7 @@
                                 <option value="ADMIN">Admin</option>
                                 <option value="DISPATCH">Dispatch</option>
                                 <option value="REPORTS_ONLY">Reports Only</option>
+                                <option value="DRIVER">Driver (Mobile App)</option>
                             </select>
                         </div>
                         <div class="form-group" style="align-self: end;">
@@ -770,6 +775,15 @@
                     </div>
                     <h3>View Reports</h3>
                     <p>View historical dispatch reports.</p>
+                </div>
+
+                <div class="landing-card" id="landing-delivery-btn"
+                     onclick="window.location.href='delivery_status.html'">
+                    <div class="icon-box">
+                        <i data-lucide="map-pin"></i>
+                    </div>
+                    <h3>Delivery Status</h3>
+                    <p>Track real-time delivery progress across all manifests.</p>
                 </div>
             </div>
         </div>

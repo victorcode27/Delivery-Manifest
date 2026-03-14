@@ -613,10 +613,11 @@ function renderTable(invoices) {
 
     invoices.forEach(invoice => {
         const row = document.createElement('tr');
+        const mNum = invoice.manifest_number || '';
         row.innerHTML = `
             <td>${escapeHtml(invoice.invoice_number || 'N/A')}</td>
             <td>${escapeHtml(invoice.order_number || 'N/A')}</td>
-            <td>${escapeHtml(invoice.manifest_number || 'N/A')}</td>
+            <td>${escapeHtml(mNum || 'N/A')}</td>
             <td>${escapeHtml(invoice.customer_name || 'N/A')}</td>
             <td>${escapeHtml(invoice.route_name || '—')}</td>
             <td>${formatDate(invoice.invoice_date)}</td>
@@ -625,9 +626,59 @@ function renderTable(invoices) {
             <td>${escapeHtml(invoice.assistant || 'N/A')}</td>
             <td>${escapeHtml(invoice.reg_number || 'N/A')}</td>
             <td>${escapeHtml(invoice.checker || 'N/A')}</td>
+            <td class="dlv-badge-cell" data-manifest="${escapeHtml(mNum)}">
+                <span style="color:#94a3b8;font-size:0.8rem">—</span>
+            </td>
         `;
         elements.tableBody.appendChild(row);
     });
+
+    // Asynchronously populate delivery status badges (non-blocking)
+    populateDeliveryBadges();
+}
+
+/**
+ * Fetch manifest-level delivery statuses and update the Delivery column badges.
+ * Silently fails if the delivery API is unavailable — badges stay as "—".
+ */
+async function populateDeliveryBadges() {
+    try {
+        const res = await apiFetch(`${API_BASE_URL}/delivery/manifests`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Build manifest_number → summary status map
+        const statusMap = {};
+        (data.manifests || []).forEach(m => {
+            statusMap[m.manifest_number] = (m.delivery_summary && m.delivery_summary.status)
+                ? m.delivery_summary.status
+                : 'PENDING';
+        });
+
+        // Update each badge cell
+        document.querySelectorAll('.dlv-badge-cell').forEach(cell => {
+            const mNum = cell.dataset.manifest;
+            if (!mNum || !statusMap[mNum]) return;
+            cell.innerHTML = deliveryStatusBadge(statusMap[mNum]);
+        });
+    } catch (e) {
+        // Silently ignore — delivery badges are supplementary, not critical
+    }
+}
+
+/**
+ * Generate a coloured delivery status badge span.
+ */
+function deliveryStatusBadge(status) {
+    const cfg = {
+        'PENDING':               { bg: '#94a3b8', label: 'Pending' },
+        'IN_PROGRESS':           { bg: '#f59e0b', label: 'In Progress' },
+        'COMPLETED':             { bg: '#10b981', label: 'Completed' },
+        'COMPLETED_WITH_ISSUES': { bg: '#ef4444', label: 'Issues' },
+    };
+    const s = cfg[status] || { bg: '#94a3b8', label: status };
+    return `<span style="background:${s.bg};color:#fff;padding:2px 8px;border-radius:12px;` +
+           `font-size:0.75rem;font-weight:600;white-space:nowrap;">${s.label}</span>`;
 }
 
 /**
