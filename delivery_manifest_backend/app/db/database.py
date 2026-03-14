@@ -410,6 +410,13 @@ def _run_migrations(db) -> None:
         except Exception as exc:
             logger.warning(f"Migration warning ({table}.{column}): {exc}")
 
+    # ── Ensure users.created_at has a DEFAULT (missing in old schema) ─────
+    try:
+        db.execute(text("ALTER TABLE users ALTER COLUMN created_at SET DEFAULT NOW()"))
+        db.commit()
+    except Exception:
+        db.rollback()
+
     # ── Role CHECK constraint migration ───────────────────────────────────
     # Order is critical:
     #   1. Drop the old constraint first — otherwise writing 'ADMIN' in step 2
