@@ -1,13 +1,15 @@
 """
 app/routes/delivery.py
 
-Delivery execution endpoints — MVP (status + notes only; no file uploads).
+Delivery execution endpoints.
 
 Routes
 ------
-  GET  /api/delivery/manifests                   — list assigned manifests with summary counts
-  GET  /api/delivery/manifests/{manifest_number} — full invoice list for one manifest
-  PUT  /api/delivery/updates/{report_item_id}    — UPSERT delivery status + notes; appends audit row
+  GET  /api/delivery/manifests                        — list assigned manifests with summary counts
+  GET  /api/delivery/manifests/{manifest_number}      — full invoice list for one manifest
+  PUT  /api/delivery/updates/{report_item_id}         — UPSERT delivery status + notes; appends audit row
+  POST /api/delivery/updates/{report_item_id}/pod     — upload PoD file; stores path in delivery_updates
+  GET  /api/delivery/files/{file_path}                — serve an uploaded PoD file (auth required)
 
 Auth matrix
 -----------
@@ -15,20 +17,20 @@ Auth matrix
   DISPATCH     all manifests, read + write
   ADMIN        all manifests, read + write
   REPORTS_ONLY blocked (403) — not in require_delivery_access
-
-Not implemented in MVP (Phase 2):
-  - File upload / PoD / signature endpoints
-  - File serving endpoint
-  - Audit event list endpoint
 """
 
+import os
+import re
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from delivery_manifest_backend.app.core.deps import require_delivery_access
+from delivery_manifest_backend.app.core.config import settings
+from delivery_manifest_backend.app.core.deps import get_current_user, require_delivery_access, require_delivery_read
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.db.database import get_db
 from delivery_manifest_backend.app.schemas.delivery import (
@@ -39,7 +41,27 @@ from delivery_manifest_backend.app.schemas.delivery import (
     DeliveryStatusSummary,
     DeliveryUpdateRequest,
     DeliveryUpdateResponse,
+    PodUploadResponse,
 )
+
+# ── PoD file validation helpers ────────────────────────────────────────────────
+
+# (magic_bytes, file_extension, mime_type)
+_MAGIC_TYPES = [
+    (b'\xff\xd8\xff',              'jpg', 'image/jpeg'),
+    (b'\x89\x50\x4e\x47\x0d\x0a', 'png', 'image/png'),
+    (b'\x25\x50\x44\x46',         'pdf', 'application/pdf'),
+]
+
+_SAFE_RE = re.compile(r'[^\w-]')   # keep alphanumeric, underscore, hyphen
+
+
+def _detect_file_type(header: bytes):
+    """Return (ext, mime) for a recognised file header, or (None, None)."""
+    for magic, ext, mime in _MAGIC_TYPES:
+        if header.startswith(magic):
+            return ext, mime
+    return None, None
 
 router = APIRouter(prefix="/delivery", tags=["delivery"])
 logger = get_logger(__name__)
@@ -97,7 +119,7 @@ def list_manifests(
     date_from:    Optional[str] = None,
     date_to:      Optional[str] = None,
     db:           Session       = Depends(get_db),
-    current_user: dict          = Depends(require_delivery_access),
+    current_user: dict          = Depends(require_delivery_read),
 ):
     """
     Return manifests with per-manifest delivery summary counts.
@@ -202,7 +224,7 @@ def list_manifests(
 def get_manifest_detail(
     manifest_number: str,
     db:              Session = Depends(get_db),
-    current_user:    dict    = Depends(require_delivery_access),
+    current_user:    dict    = Depends(require_delivery_read),
 ):
     """
     Return the full invoice list for a manifest with per-invoice delivery status.
@@ -281,6 +303,7 @@ def get_manifest_detail(
             notes           = row.notes,
             has_pod         = bool(row.pod_image_path),
             has_signature   = bool(row.signature_path),
+            pod_image_path  = row.pod_image_path,
             updated_at      = str(row.updated_at) if row.updated_at else None,
         ))
 
@@ -443,3 +466,240 @@ def update_delivery_status(
         notes           = du_row.notes,
         updated_at      = str(du_row.updated_at) if du_row.updated_at else None,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/delivery/updates/{report_item_id}/pod
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/updates/{report_item_id}/pod", response_model=PodUploadResponse)
+async def upload_pod(
+    report_item_id: int,
+    pod_file:       UploadFile = File(...),
+    db:             Session    = Depends(get_db),
+    current_user:   dict       = Depends(require_delivery_access),
+):
+    """
+    Upload a Proof of Delivery file for a single invoice.
+
+    Accepted types : JPEG, PNG, PDF (validated by magic bytes, not extension).
+    Size limit      : settings.POD_MAX_BYTES (default 8 MB).
+    Storage         : {UPLOADS_ROOT}/pods/{manifest_number}/{timestamp}_{invoice}_{name}.{ext}
+    DB              : delivery_updates.pod_image_path ← relative path from UPLOADS_ROOT.
+    Atomic write    : DB commit first → disk write second.
+                      DB is reverted if disk write fails.
+
+    DRIVER     — 403 if item not in their assigned manifest.
+    ADMIN/DISPATCH — unrestricted.
+    """
+    role = current_user.get("role")
+
+    # Resolve report_item → manifest header
+    item_row = db.execute(
+        text("""
+            SELECT ri.id, ri.invoice_number, r.manifest_number, r.driver, r.driver_user_id
+            FROM   report_items ri
+            JOIN   reports       r ON r.id = ri.report_id
+            WHERE  ri.id = :id
+        """),
+        {"id": report_item_id},
+    ).fetchone()
+
+    if not item_row:
+        raise HTTPException(status_code=404, detail="Report item not found")
+
+    # DRIVER access check — same logic as PUT status endpoint
+    if role == "DRIVER":
+        assigned = (
+            item_row.driver_user_id == current_user["id"]
+            or item_row.driver == current_user["username"]
+        )
+        if not assigned:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: item not in your manifest",
+            )
+
+    # Read header bytes first (needed for type detection without loading whole file)
+    header = await pod_file.read(8)
+    ext, mime = _detect_file_type(header)
+    if not ext:
+        raise HTTPException(
+            status_code=422,
+            detail="Unsupported file type. Allowed: JPEG, PNG, PDF",
+        )
+
+    # Read remainder to check total size
+    remainder = await pod_file.read()
+    total_size = len(header) + len(remainder)
+    if total_size > settings.POD_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum {settings.POD_MAX_BYTES // (1024 * 1024)} MB allowed",
+        )
+
+    # Build safe file name: YYYYMMDDHHMMSS_invoiceNumber_originalStem.ext
+    ts         = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
+    safe_inv   = _SAFE_RE.sub('_', item_row.invoice_number)[:30]
+    orig_stem  = os.path.splitext(pod_file.filename or 'file')[0]
+    safe_stem  = _SAFE_RE.sub('_', orig_stem)[:20]
+    filename   = f"{ts}_{safe_inv}_{safe_stem}.{ext}"
+
+    rel_dir  = os.path.join('pods', item_row.manifest_number)
+    rel_path = os.path.join(rel_dir, filename).replace('\\', '/')   # forward slashes in DB
+    abs_dir  = os.path.join(os.path.realpath(settings.UPLOADS_ROOT), 'pods', item_row.manifest_number)
+    abs_path = os.path.join(abs_dir, filename)
+
+    os.makedirs(abs_dir, exist_ok=True)
+
+    # ── Atomic write: DB commit first, disk second ──────────────────────────
+    try:
+        # UPSERT — only touch pod_image_path and updated_at on conflict
+        db.execute(
+            text("""
+                INSERT INTO delivery_updates
+                    (report_item_id, invoice_number, manifest_number, status, pod_image_path, updated_at)
+                VALUES
+                    (:rid, :inv, :mn, 'PENDING', :path, CURRENT_TIMESTAMP)
+                ON CONFLICT (report_item_id) DO UPDATE SET
+                    pod_image_path = EXCLUDED.pod_image_path,
+                    updated_at     = CURRENT_TIMESTAMP
+            """),
+            {
+                "rid":  report_item_id,
+                "inv":  item_row.invoice_number,
+                "mn":   item_row.manifest_number,
+                "path": rel_path,
+            },
+        )
+
+        du_row = db.execute(
+            text("SELECT * FROM delivery_updates WHERE report_item_id = :id"),
+            {"id": report_item_id},
+        ).fetchone()
+
+        # Audit trail
+        db.execute(
+            text("""
+                INSERT INTO delivery_events
+                    (delivery_update_id, report_item_id, manifest_number, invoice_number,
+                     status, pod_image_path, changed_by_user_id, changed_by_username, event_at)
+                VALUES
+                    (:du_id, :rid, :mn, :inv,
+                     :status, :pod_path, :user_id, :username, CURRENT_TIMESTAMP)
+            """),
+            {
+                "du_id":    du_row.id,
+                "rid":      report_item_id,
+                "mn":       item_row.manifest_number,
+                "inv":      item_row.invoice_number,
+                "status":   du_row.status,
+                "pod_path": rel_path,
+                "user_id":  current_user["id"],
+                "username": current_user["username"],
+            },
+        )
+
+        db.commit()
+
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.error(
+            f"DB error during PoD upload for report_item_id={report_item_id}",
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    # ── Write to disk (after DB commit) ────────────────────────────────────
+    try:
+        with open(abs_path, 'wb') as f:
+            f.write(header + remainder)
+    except OSError:
+        # Revert the DB path since the file never landed on disk
+        try:
+            db.execute(
+                text("""
+                    UPDATE delivery_updates
+                    SET pod_image_path = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE report_item_id = :id
+                """),
+                {"id": report_item_id},
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.error("Failed to revert pod_image_path after disk write failure", exc_info=True)
+        logger.critical(
+            f"Disk write failed for PoD report_item_id={report_item_id}: path={abs_path}",
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="File storage failed")
+
+    logger.info(
+        f"PoD uploaded: item={report_item_id} manifest={item_row.manifest_number} "
+        f"file={filename} by '{current_user['username']}' (role={role})"
+    )
+
+    return PodUploadResponse(
+        report_item_id = report_item_id,
+        invoice_number = item_row.invoice_number,
+        pod_image_path = rel_path,
+        has_pod        = True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /api/delivery/files/{file_path:path}
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/files/{file_path:path}")
+def serve_pod_file(
+    file_path:    str,
+    db:           Session = Depends(get_db),
+    current_user: dict    = Depends(get_current_user),
+):
+    """
+    Serve an uploaded PoD or signature file.
+
+    Auth    : any authenticated user (all roles).
+    Security:
+      - Path traversal is blocked — the resolved absolute path must start
+        with UPLOADS_ROOT. Any request that escapes the directory is rejected 400.
+      - DRIVER role: may only access files stored under a manifest assigned to them.
+        The manifest_number is extracted from the path prefix (pods/{manifest_number}/...).
+      - ADMIN / DISPATCH / REPORTS_ONLY: unrestricted access to all files.
+
+    file_path : relative path as stored in delivery_updates.pod_image_path
+                e.g. pods/MAN-001/20240315_INV1234_doc.jpg
+    """
+    role = current_user.get("role")
+
+    # DRIVER: enforce manifest ownership before touching the filesystem
+    if role == "DRIVER":
+        # Expected path shape: pods/{manifest_number}/{filename}
+        parts = file_path.replace("\\", "/").split("/")
+        if len(parts) < 3 or parts[0] != "pods":
+            raise HTTPException(status_code=403, detail="Access denied")
+        manifest_number = parts[1]
+        if not _is_manifest_assigned_to_driver(db, manifest_number, current_user):
+            raise HTTPException(status_code=403, detail="Access denied: file not from your manifest")
+
+    uploads_root = os.path.realpath(settings.UPLOADS_ROOT)
+    requested    = os.path.realpath(os.path.join(uploads_root, file_path))
+
+    # Block any path that escapes the uploads root
+    if not requested.startswith(uploads_root + os.sep) and requested != uploads_root:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    if not os.path.isfile(requested):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Detect MIME type from magic bytes (not extension) for correct Content-Type
+    with open(requested, 'rb') as f:
+        file_header = f.read(8)
+    _, mime = _detect_file_type(file_header)
+    media_type = mime or 'application/octet-stream'
+
+    return FileResponse(requested, media_type=media_type)

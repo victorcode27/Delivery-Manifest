@@ -2,6 +2,9 @@ __pycache__/
 *.log
 *.db
 Manifests_Output/
+# PoD uploads — files stored at runtime; keep the directory, ignore contents
+delivery_manifest_backend/uploads/*
+!delivery_manifest_backend/uploads/.gitkeep
 node_modules/
 .env
 .vscode/

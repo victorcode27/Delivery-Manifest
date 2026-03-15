@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     # Defaults to a `static/` folder inside the backend root when left empty.
     STATIC_DIR: str = ""
 
+    # ── Proof of Delivery uploads ─────────────────────────────────────────────
+    # Root directory for uploaded PoD files.
+    # Override via UPLOADS_ROOT env var for production (e.g. Render Persistent Disk).
+    UPLOADS_ROOT: str = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'uploads'
+    ))
+    POD_MAX_BYTES: int = 8 * 1024 * 1024   # 8 MB
+
     # ── File watcher ──────────────────────────────────────────────────────────
     ENABLE_FILE_WATCHER: bool = False
     INVOICE_INPUT_FOLDER: str = r"\\BRD-DESKTOP-ELV\storage"

@@ -482,6 +482,11 @@ def _create_indexes(db, *, skip_unique_invoice: bool = False) -> None:
         # manifest_events.manifest_number — audit log lookup per manifest
         ("idx_events_manifest_number",
          "CREATE INDEX IF NOT EXISTS idx_events_manifest_number ON manifest_events(manifest_number)"),
+        # reports — driver assignment lookup used by DRIVER role filter
+        ("idx_reports_driver_user_id",
+         "CREATE INDEX IF NOT EXISTS idx_reports_driver_user_id ON reports(driver_user_id)"),
+        ("idx_reports_driver",
+         "CREATE INDEX IF NOT EXISTS idx_reports_driver ON reports(driver)"),
         # delivery_updates — manifest filter and driver filter
         ("idx_du_manifest",
          "CREATE INDEX IF NOT EXISTS idx_du_manifest ON delivery_updates(manifest_number)"),

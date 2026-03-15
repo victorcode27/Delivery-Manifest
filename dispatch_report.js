@@ -643,7 +643,11 @@ function renderTable(invoices) {
  */
 async function populateDeliveryBadges() {
     try {
-        const res = await apiFetch(`${API_BASE_URL}/delivery/manifests`);
+        const params = new URLSearchParams();
+        if (currentState.dateFrom) params.append('date_from', currentState.dateFrom);
+        if (currentState.dateTo)   params.append('date_to',   currentState.dateTo);
+        const query = params.toString() ? `?${params.toString()}` : '';
+        const res = await apiFetch(`${API_BASE_URL}/delivery/manifests${query}`);
         if (!res.ok) return;
         const data = await res.json();
 

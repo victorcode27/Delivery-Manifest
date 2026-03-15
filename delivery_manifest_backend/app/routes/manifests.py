@@ -38,7 +38,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from delivery_manifest_backend.app.core.config import settings
-from delivery_manifest_backend.app.core.deps import get_current_user, require_admin, require_dispatch_or_admin
+from delivery_manifest_backend.app.core.deps import get_current_user, require_admin, require_dispatch_or_admin, require_office_read
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.schemas.manifest import (
     AllocateRequest,
@@ -92,7 +92,7 @@ def get_invoices(
     area:   Optional[str] = None,
     limit:  int           = 2000,
     offset: int           = 0,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_office_read),
 ):
     """
     Return pending invoices not in any staging session.
@@ -206,7 +206,7 @@ def add_manual_invoice(
 
 
 @router.get("/invoices/search")
-def search_invoices(q: str, current_user: dict = Depends(get_current_user)):
+def search_invoices(q: str, current_user: dict = Depends(require_office_read)):
     try:
         return {"results": manifest_service.search_orders(q)}
     except Exception:
@@ -273,7 +273,7 @@ def remove_from_manifest_staging(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/manifests/search/query")
-def search_manifests(q: str, current_user: dict = Depends(get_current_user)):
+def search_manifests(q: str, current_user: dict = Depends(require_office_read)):
     try:
         details = manifest_service.get_manifest_details(q)
         return {"match": True, "manifest": details} if details else {"match": False}
@@ -283,7 +283,7 @@ def search_manifests(q: str, current_user: dict = Depends(get_current_user)):
 
 
 @router.get("/manifests/{manifest_number}")
-def get_manifest_details(manifest_number: str, current_user: dict = Depends(get_current_user)):
+def get_manifest_details(manifest_number: str, current_user: dict = Depends(require_office_read)):
     try:
         details = manifest_service.get_manifest_details(manifest_number)
         if not details:
@@ -335,7 +335,7 @@ def save_report(
 
 
 @router.get("/reports")
-def get_reports(date_from: Optional[str] = None, date_to: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+def get_reports(date_from: Optional[str] = None, date_to: Optional[str] = None, current_user: dict = Depends(require_office_read)):
     """Legacy endpoint — prefer /reports/dispatched."""
     try:
         reports = manifest_service.get_reports(date_from, date_to)
@@ -356,7 +356,7 @@ def get_dispatched_invoices(
     offset:      int           = 0,
     sort_by:     str           = "date_dispatched",
     sort_order:  str           = "DESC",
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_office_read),
 ):
     """Paginated invoice-level dispatch history."""
     try:
@@ -396,7 +396,7 @@ def get_dispatched_invoices(
 def get_outstanding_invoices(
     limit:  int = 500,
     offset: int = 0,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_office_read),
 ):
     """
     Return invoices not yet included in any dispatch report.

@@ -201,9 +201,17 @@ function renderDetailModal(manifest) {
                 <td>${dsEsc(item.area           || '—')}</td>
                 <td>${invoiceStatusBadge(item.delivery_status || 'PENDING')}</td>
                 <td class="ds-notes">${dsEsc(item.notes || '—')}</td>
+                <td>${item.has_pod && item.pod_image_path
+                    ? `<button class="ds-pod-btn report-btn report-btn-secondary"
+                               data-pod-path="${dsEsc(item.pod_image_path)}"
+                               style="font-size:0.75rem;padding:3px 10px;">
+                           View PoD
+                       </button>`
+                    : '—'
+                }</td>
                 <td>${item.updated_at ? dsFormatDate(item.updated_at) : '—'}</td>
             </tr>`).join('')
-        : `<tr><td colspan="6" style="text-align:center;color:#94a3b8">No invoices found</td></tr>`;
+        : `<tr><td colspan="7" style="text-align:center;color:#94a3b8">No invoices found</td></tr>`;
 
     body.innerHTML = `
         <div class="ds-modal-info">
@@ -221,6 +229,7 @@ function renderDetailModal(manifest) {
                         <th>Area</th>
                         <th>Delivery Status</th>
                         <th>Notes</th>
+                        <th>PoD</th>
                         <th>Last Updated</th>
                     </tr>
                 </thead>
@@ -228,6 +237,20 @@ function renderDetailModal(manifest) {
             </table>
         </div>`;
     lucide.createIcons();
+}
+
+async function viewPodFile(path) {
+    try {
+        const res = await apiFetch(`/api/delivery/files/${path}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const url  = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        // Release the object URL after 60 s — long enough for the tab to load
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+        alert(`Could not load PoD file: ${e.message}`);
+    }
 }
 
 function closeDetail() {
@@ -288,9 +311,14 @@ function dsInit() {
         if (btn) openDetail(btn.dataset.manifest);
     });
 
-    // Close modal on backdrop click
+    // Close modal on backdrop click; also handle PoD view buttons inside modal
     document.getElementById('ds-detail-modal').addEventListener('click', (e) => {
-        if (e.target === document.getElementById('ds-detail-modal')) closeDetail();
+        if (e.target === document.getElementById('ds-detail-modal')) {
+            closeDetail();
+            return;
+        }
+        const podBtn = e.target.closest('.ds-pod-btn');
+        if (podBtn) viewPodFile(podBtn.dataset.podPath);
     });
 
     loadManifests();

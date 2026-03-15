@@ -165,6 +165,26 @@ def require_office(current_user: dict = Depends(get_current_user)) -> dict:
     return current_user
 
 
+def require_office_read(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    Raises 403 if the caller has DRIVER role.
+
+    Covers read-only office data (invoices, reports, manifest detail) that
+    field drivers must not access.  ADMIN, DISPATCH, and REPORTS_ONLY are
+    all permitted — only DRIVER is blocked.
+    """
+    role = current_user.get("role", "")
+    if role == "DRIVER":
+        logger.warning(
+            f"Office-read access denied for user '{current_user.get('username')}' (role={role})"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Office access required",
+        )
+    return current_user
+
+
 def require_delivery_access(current_user: dict = Depends(get_current_user)) -> dict:
     """
     Raises 403 unless the caller has DRIVER, ADMIN, or DISPATCH role.
@@ -176,6 +196,26 @@ def require_delivery_access(current_user: dict = Depends(get_current_user)) -> d
     if role not in ("DRIVER", "ADMIN", "DISPATCH"):
         logger.warning(
             f"Delivery access denied for user '{current_user.get('username')}' (role={role})"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Delivery access required",
+        )
+    return current_user
+
+
+def require_delivery_read(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    Raises 403 unless the caller has DRIVER, ADMIN, DISPATCH, or REPORTS_ONLY role.
+
+    Covers read-only delivery data (manifest list, manifest detail).
+    All four roles are permitted — REPORTS_ONLY is explicitly included.
+    Write endpoints (PUT status, POST PoD) must still use require_delivery_access.
+    """
+    role = current_user.get("role", "")
+    if role not in ("DRIVER", "ADMIN", "DISPATCH", "REPORTS_ONLY"):
+        logger.warning(
+            f"Delivery read access denied for user '{current_user.get('username')}' (role={role})"
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

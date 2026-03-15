@@ -1,11 +1,7 @@
 """
 app/schemas/delivery.py
 
-Pydantic request/response models for the delivery execution API (MVP).
-
-MVP scope: delivery status + notes only.
-File uploads (PoD, signature) are placeholders — fields exist in the schema
-so the response shape is stable for future phases; they always return False/None.
+Pydantic request/response models for the delivery execution API.
 """
 
 from typing import List, Optional
@@ -64,8 +60,9 @@ class DeliveryManifestItem(BaseModel):
     value:           Optional[float] = None
     delivery_status: str
     notes:           Optional[str]   = None
-    has_pod:         bool            = False   # always False in MVP
-    has_signature:   bool            = False   # always False in MVP
+    has_pod:         bool            = False
+    has_signature:   bool            = False
+    pod_image_path:  Optional[str]   = None
     updated_at:      Optional[str]   = None
 
 
@@ -105,3 +102,13 @@ class DeliveryUpdateResponse(BaseModel):
     status:          str
     notes:           Optional[str] = None
     updated_at:      Optional[str] = None
+
+
+# ── PoD upload response ────────────────────────────────────────────────────────
+
+class PodUploadResponse(BaseModel):
+    """Returned after a successful PoD file upload."""
+    report_item_id: int
+    invoice_number: str
+    pod_image_path: str
+    has_pod:        bool = True
