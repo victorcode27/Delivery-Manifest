@@ -820,10 +820,12 @@ def get_dispatched_invoices(
                 ri.invoice_number, ri.order_number, ri.customer_name,
                 ri.customer_number, ri.invoice_date, ri.area,
                 ri.sku, ri.value, ri.weight,
-                cr.route_name
+                cr.route_name,
+                du.status
             FROM reports r
             INNER JOIN report_items ri ON r.id = ri.report_id
             LEFT JOIN customer_routes cr ON ri.customer_name = cr.customer_name
+            LEFT JOIN delivery_updates du ON du.report_item_id = ri.id
         """
         where: list[str] = []
         params: list     = []
@@ -871,7 +873,7 @@ def get_dispatched_invoices(
             "manifest_number", "date_dispatched", "driver", "assistant",
             "checker", "reg_number", "invoice_number", "order_number",
             "customer_name", "customer_number", "invoice_date", "area",
-            "sku", "value", "weight", "route_name",
+            "sku", "value", "weight", "route_name", "delivery_status",
         ]
         results = [dict(zip(keys, row)) for row in rows]
         return results, total
