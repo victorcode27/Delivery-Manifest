@@ -92,7 +92,7 @@ let settingsData = {
     checkers: [],
     routes: [],
     trucks: [], // Each truck: { reg, driver, assistant, checker }
-    customerRoutes: {} // { "CustomerName": "RouteName", ... }
+    customerRoutes: [] // [{ customer_name, route_name, delivery_mode }, ...]
 };
 
 // Load settings from API
@@ -129,7 +129,7 @@ async function loadSettings() {
     settingsData.checkers       = checkersData?.values   ?? [];
     settingsData.routes         = routesData?.values     ?? [];
     settingsData.trucks         = trucksData?.trucks     ?? [];
-    settingsData.customerRoutes = custRoutesData?.routes ?? {};
+    settingsData.customerRoutes = custRoutesData?.routes ?? [];
 
     // Only alert the user if every single endpoint failed (server unreachable)
     const allFailed = [driversData, assistantsData, checkersData, routesData, trucksData, custRoutesData]
@@ -221,9 +221,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         handleTruckChange();
     }
 
-    // Initial Landing Page
+    // Initial Landing Page — skip if session already exists in localStorage
     initUsers();
-    showLandingPage();
+    if (getToken() || localStorage.getItem('currentUser')) {
+        restoreSessionUI();
+    } else {
+        showLandingPage();
+    }
 
     // Initialize DEV_MODE if available
     if (window.DevMode) {
@@ -602,27 +606,6 @@ function initSecondaryListeners() {
     document.getElementById('select-all-invoices').addEventListener('change', toggleSelectAll);
     document.getElementById('refresh-invoices-btn').addEventListener('click', refreshInvoices);
 
-    // Settings modal listeners
-    document.getElementById('settings-btn').addEventListener('click', openSettingsModal);
-    document.getElementById('close-settings-modal-btn').addEventListener('click', closeSettingsModal);
-    document.getElementById('close-settings-btn').addEventListener('click', closeSettingsModal);
-
-    // Settings tabs
-    document.querySelectorAll('.settings-tab').forEach(tab => {
-        tab.addEventListener('click', handleSettingsTabClick);
-    });
-
-    // Settings add buttons
-    document.getElementById('add-driver-btn').addEventListener('click', () => addSettingsItem('drivers'));
-    document.getElementById('add-assistant-btn').addEventListener('click', () => addSettingsItem('assistants'));
-    document.getElementById('add-checker-btn').addEventListener('click', () => addSettingsItem('checkers'));
-    document.getElementById('add-route-btn').addEventListener('click', () => addSettingsItem('routes'));
-    document.getElementById('add-truck-btn').addEventListener('click', addTruck);
-    document.getElementById('add-user-btn').addEventListener('click', addUser);
-
-    // User Settings Tab Click
-    document.getElementById('tab-btn-users').addEventListener('click', renderUsersList);
-
     // Header inputs save on change
     Object.values(formInputs).forEach(input => {
         input.addEventListener('change', saveState);
@@ -635,8 +618,22 @@ function initSecondaryListeners() {
     fetchAreas();
 
     // Landing & Auth Listeners
-    document.getElementById('landing-manifest-btn').addEventListener('click', () => openLoginModal('manifest'));
-    document.getElementById('landing-report-btn').addEventListener('click', () => openLoginModal('report'));
+    // If already authenticated, bypass login modal and restore straight into the app.
+    // If not authenticated, open the login modal as before.
+    document.getElementById('landing-manifest-btn').addEventListener('click', () => {
+        if (getToken() || localStorage.getItem('currentUser')) {
+            restoreSessionUI('manifest');
+        } else {
+            openLoginModal('manifest');
+        }
+    });
+    document.getElementById('landing-report-btn').addEventListener('click', () => {
+        if (getToken() || localStorage.getItem('currentUser')) {
+            restoreSessionUI('report');
+        } else {
+            openLoginModal('report');
+        }
+    });
     document.getElementById('login-submit-btn').addEventListener('click', handleLogin);
     document.getElementById('close-login-btn').addEventListener('click', () => {
         document.getElementById('login-modal').classList.add('hidden');
@@ -1782,68 +1779,6 @@ async function refreshInvoices() {
 // SETTINGS MODAL FUNCTIONS
 // =============================================
 
-// =============================================
-// REWRITTEN SETTINGS MODAL LOGIC
-// =============================================
-
-async function openSettingsModal() {
-    alert("Settings Clicked!"); // Debug Alert
-    console.log("Opening Settings Modal...");
-    const modal = document.getElementById('settings-modal');
-    modal.classList.remove('hidden');
-    modal.classList.add('visible');
-
-    // 1. Fetch latest data from server
-    await loadSettings();
-
-    // 2. Render all lists
-    renderSettingsList('drivers');
-    renderSettingsList('assistants');
-    renderSettingsList('checkers');
-    renderSettingsList('routes');
-    renderTrucksList();
-
-    // 3. Populate internal dropdowns (for adding trucks)
-    populateTruckFormDropdowns();
-
-    // 4. Reset to first tab
-    document.querySelector('.settings-tab[data-tab="drivers"]').click();
-
-    lucide.createIcons();
-}
-
-function closeSettingsModal() {
-    console.log("Closing Settings Modal...");
-    const modal = document.getElementById('settings-modal');
-    modal.classList.remove('visible');
-    modal.classList.add('hidden');
-
-    // 1. Refresh global settings data ensures main page has latest
-    loadSettings().then(() => {
-        // 2. Update main page dropdowns
-        initTruckDropdown();
-        initPersonnelDropdowns();
-    });
-}
-
-function handleSettingsTabClick(e) {
-    // Handle click on icon or span inside button
-    const button = e.target.closest('.settings-tab');
-    if (!button) return;
-
-    const tabName = button.dataset.tab;
-
-    // Update active tab button
-    document.querySelectorAll('.settings-tab').forEach(tab => {
-        tab.classList.toggle('active', tab.dataset.tab === tabName);
-    });
-
-    // Update active tab content
-    document.querySelectorAll('.settings-tab-content').forEach(content => {
-        content.classList.toggle('active', content.id === `tab-${tabName}`);
-    });
-}
-
 function populateTruckFormDropdowns() {
     // Populate driver dropdown
     const driverSelect = document.getElementById('new-truck-driver');
@@ -1876,408 +1811,6 @@ function populateTruckFormDropdowns() {
     });
 }
 
-// =============================================
-// REWRITTEN SETTINGS CRUD
-// =============================================
-
-async function addSettingsItem(category) {
-    const inputMap = {
-        drivers: 'new-driver-name',
-        assistants: 'new-assistant-name',
-        checkers: 'new-checker-name',
-        routes: 'new-route-name'
-    };
-
-    const inputId = inputMap[category];
-    const input = document.getElementById(inputId);
-    if (!input) {
-        console.error("Input not found for", category);
-        return;
-    }
-
-    const value = input.value.trim();
-
-    if (!value) {
-        alert('Please enter a name.');
-        return;
-    }
-
-    // Add to server
-    try {
-        const response = await apiFetch(`${API_URL}/settings`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ category, value })
-        });
-
-        if (response.ok) {
-            // Update local state and UI immediately
-            if (!settingsData[category]) settingsData[category] = [];
-            settingsData[category].push(value);
-
-            input.value = '';
-            renderSettingsList(category);
-
-            // If it's a person, update the Truck form dropdowns too
-            if (['drivers', 'assistants', 'checkers'].includes(category)) {
-                populateTruckFormDropdowns();
-            }
-
-            lucide.createIcons();
-        } else {
-            alert('Could not save setting. It might already exist.');
-        }
-    } catch (e) {
-        console.error(e);
-        alert('Server error saving setting: ' + e.message);
-    }
-}
-
-async function removeSettingsItem(category, index) {
-    const itemName = settingsData[category][index];
-
-    if (confirm(`Are you sure you want to remove "${itemName}"?`)) {
-        try {
-            const response = await apiFetch(`${API_URL}/settings/${category}/${encodeURIComponent(itemName)}`, {
-                method: 'DELETE'
-            });
-
-            if (response.ok) {
-                // Update local state
-                settingsData[category].splice(index, 1);
-                renderSettingsList(category);
-
-                // Update truck dropdowns
-                if (['drivers', 'assistants', 'checkers'].includes(category)) {
-                    populateTruckFormDropdowns();
-                }
-                lucide.createIcons();
-            } else {
-                alert('Failed to delete setting.');
-            }
-        } catch (e) {
-            console.error(e);
-            alert('Server error deleting setting: ' + e.message);
-        }
-    }
-}
-
-function renderSettingsList(category) {
-    const listEl = document.getElementById(`${category}-list`);
-    if (!listEl) {
-        console.error("List element not found for", category);
-        return;
-    }
-
-    const items = settingsData[category] || [];
-
-    if (items.length === 0) {
-        listEl.innerHTML = '<div class="settings-empty">No items added yet</div>';
-        return;
-    }
-
-    let html = '';
-    items.forEach((item, index) => {
-        html += `
-        <div class="settings-item">
-            <div class="settings-item-info">
-                <span class="settings-item-name">${item}</span>
-            </div>
-            <div class="settings-item-actions">
-                <button class="btn-icon btn-edit" onclick="editSettingsItem('${category}', ${index})" title="Edit">
-                    <i data-lucide="pencil"></i>
-                </button>
-                <button class="btn-icon btn-delete" onclick="removeSettingsItem('${category}', ${index})" title="Delete">
-                    <i data-lucide="trash-2"></i>
-                </button>
-            </div>
-        </div>
-        `;
-    });
-
-    listEl.innerHTML = html;
-    lucide.createIcons();
-}
-
-function editSettingsItem(category, index) {
-    const currentValue = settingsData[category][index];
-    const listEl = document.getElementById(`${category}-list`);
-    const itemEl = listEl.querySelectorAll('.settings-item')[index];
-
-    itemEl.innerHTML = `
-        <div class="settings-edit-form">
-            <input type="text" id="edit-setting-${category}-${index}" value="${currentValue.replace(/"/g, '&quot;')}" style="flex:1;">
-            <div class="settings-edit-actions">
-                <button class="btn btn-primary btn-sm" onclick="saveSettingsEdit('${category}', ${index})">
-                    <i data-lucide="check"></i> Save
-                </button>
-                <button class="btn btn-secondary btn-sm" onclick="cancelSettingsEdit('${category}')">
-                    <i data-lucide="x"></i> Cancel
-                </button>
-            </div>
-        </div>
-    `;
-
-    lucide.createIcons();
-    const input = document.getElementById(`edit-setting-${category}-${index}`);
-    input.focus();
-    input.select();
-}
-
-async function saveSettingsEdit(category, index) {
-    const oldValue = settingsData[category][index];
-    const input = document.getElementById(`edit-setting-${category}-${index}`);
-    const newValue = input.value.trim();
-
-    if (!newValue) {
-        alert('Name cannot be empty.');
-        input.focus();
-        return;
-    }
-
-    if (newValue === oldValue) {
-        // No change — just exit edit mode without an API call
-        renderSettingsList(category);
-        return;
-    }
-
-    try {
-        const response = await apiFetch(`${API_URL}/settings`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ category, old_value: oldValue, new_value: newValue })
-        });
-
-        if (response.ok) {
-            settingsData[category][index] = newValue;
-            renderSettingsList(category);
-            if (['drivers', 'assistants', 'checkers'].includes(category)) {
-                populateTruckFormDropdowns();
-            }
-        } else {
-            const err = await response.json().catch(() => ({}));
-            alert(err.detail || 'Failed to update. The name may already exist.');
-        }
-    } catch (e) {
-        console.error(e);
-        alert('Server error updating setting.');
-    }
-}
-
-function cancelSettingsEdit(category) {
-    renderSettingsList(category);
-}
-
-async function addTruck() {
-    const regInput = document.getElementById('new-truck-reg');
-    const driverSelect = document.getElementById('new-truck-driver');
-    const assistantSelect = document.getElementById('new-truck-assistant');
-    const checkerSelect = document.getElementById('new-truck-checker');
-
-    const reg = regInput.value.trim().toUpperCase();
-
-    if (!reg) {
-        alert('Please enter a registration number.');
-        return;
-    }
-
-    const newTruck = {
-        reg: reg,
-        driver: driverSelect.value || '',
-        assistant: assistantSelect.value || '',
-        checker: checkerSelect.value || ''
-    };
-
-    try {
-        const response = await apiFetch(`${API_URL}/trucks`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(newTruck)
-        });
-
-        if (response.ok) {
-            settingsData.trucks.push(newTruck);
-
-            // Clear form
-            regInput.value = '';
-            driverSelect.value = '';
-            assistantSelect.value = '';
-            checkerSelect.value = '';
-
-            renderTrucksList();
-            lucide.createIcons();
-        } else {
-            alert('Could not save truck. Registration might exist.');
-        }
-    } catch (e) {
-        console.error(e);
-        alert('Server error saving truck.');
-    }
-}
-
-async function removeTruck(index) {
-    const truck = settingsData.trucks[index];
-
-    if (confirm(`Are you sure you want to remove truck "${truck.reg}"?`)) {
-        try {
-            const response = await apiFetch(`${API_URL}/trucks/${encodeURIComponent(truck.reg)}`, {
-                method: 'DELETE'
-            });
-
-            if (response.ok) {
-                settingsData.trucks.splice(index, 1);
-                renderTrucksList();
-                lucide.createIcons();
-            } else {
-                alert('Failed to delete truck.');
-            }
-        } catch (e) {
-            console.error(e);
-            alert('Server error deleting truck.');
-        }
-    }
-}
-
-function renderTrucksList() {
-    const listEl = document.getElementById('trucks-list');
-
-    if (settingsData.trucks.length === 0) {
-        listEl.innerHTML = '<div class="settings-empty">No trucks added yet</div>';
-        return;
-    }
-
-    listEl.innerHTML = settingsData.trucks.map((truck, index) => {
-        const details = [];
-        if (truck.driver) details.push(`Driver: ${truck.driver}`);
-        if (truck.assistant) details.push(`Assistant: ${truck.assistant}`);
-        if (truck.checker) details.push(`Checker: ${truck.checker}`);
-
-        return `
-            <div class="settings-item" id="settings-truck-${index}">
-                <div class="settings-item-info">
-                    <span class="settings-item-name">${truck.reg}</span>
-                    ${details.length > 0 ? `<span class="settings-item-details">${details.join(' | ')}</span>` : ''}
-                </div>
-                <div class="settings-item-actions">
-                    <button class="btn-icon btn-edit" onclick="editTruck(${index})" title="Edit">
-                        <i data-lucide="pencil"></i>
-                    </button>
-                    <button class="btn-icon btn-delete" onclick="removeTruck(${index})" title="Delete">
-                        <i data-lucide="trash-2"></i>
-                    </button>
-                </div>
-            </div>
-        `;
-    }).join('');
-
-    lucide.createIcons();
-}
-
-function editTruck(index) {
-    const truck = settingsData.trucks[index];
-    const itemEl = document.getElementById(`settings-truck-${index}`);
-
-    // Build driver options
-    const driverOptions = settingsData.drivers.map(d =>
-        `<option value="${d}" ${d === truck.driver ? 'selected' : ''}>${d}</option>`
-    ).join('');
-
-    // Build assistant options
-    const assistantOptions = settingsData.assistants.map(a =>
-        `<option value="${a}" ${a === truck.assistant ? 'selected' : ''}>${a}</option>`
-    ).join('');
-
-    // Build checker options
-    const checkerOptions = settingsData.checkers.map(c =>
-        `<option value="${c}" ${c === truck.checker ? 'selected' : ''}>${c}</option>`
-    ).join('');
-
-    // Replace the item with an edit form
-    itemEl.innerHTML = `
-        <div class="settings-edit-form truck-edit-form">
-            <div class="truck-edit-grid">
-                <div class="form-group">
-                    <label>Registration #</label>
-                    <input type="text" id="edit-truck-reg-${index}" value="${truck.reg}">
-                </div>
-                <div class="form-group">
-                    <label>Driver</label>
-                    <select id="edit-truck-driver-${index}">
-                        <option value="">No default driver</option>
-                        ${driverOptions}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Assistant</label>
-                    <select id="edit-truck-assistant-${index}">
-                        <option value="">No default assistant</option>
-                        ${assistantOptions}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Checker</label>
-                    <select id="edit-truck-checker-${index}">
-                        <option value="">No default checker</option>
-                        ${checkerOptions}
-                    </select>
-                </div>
-            </div>
-            <div class="settings-edit-actions">
-                <button class="btn btn-primary btn-sm" onclick="saveTruckEdit(${index})">
-                    <i data-lucide="check"></i> Save
-                </button>
-                <button class="btn btn-secondary btn-sm" onclick="cancelTruckEdit()">
-                    <i data-lucide="x"></i> Cancel
-                </button>
-            </div>
-        </div>
-    `;
-
-    lucide.createIcons();
-}
-
-async function saveTruckEdit(index) {
-    const regInput = document.getElementById(`edit-truck-reg-${index}`);
-    const driverSelect = document.getElementById(`edit-truck-driver-${index}`);
-    const assistantSelect = document.getElementById(`edit-truck-assistant-${index}`);
-    const checkerSelect = document.getElementById(`edit-truck-checker-${index}`);
-
-    const newReg = regInput.value.trim().toUpperCase();
-
-    if (!newReg) {
-        alert('Please enter a registration number.');
-        return;
-    }
-
-    const updatedTruck = {
-        reg: newReg,
-        driver: driverSelect.value || '',
-        assistant: assistantSelect.value || '',
-        checker: checkerSelect.value || ''
-    };
-
-    try {
-        const response = await apiFetch(`${API_URL}/trucks/${encodeURIComponent(settingsData.trucks[index].reg)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updatedTruck)
-        });
-
-        if (response.ok) {
-            settingsData.trucks[index] = updatedTruck;
-            renderTrucksList();
-        } else {
-            alert('Failed to update truck.');
-        }
-    } catch (e) {
-        console.error(e);
-        alert('Server error updating truck.');
-    }
-}
-
-function cancelTruckEdit() {
-    renderTrucksList();
-}
 
 // =============================================
 // CUSTOMER-ROUTE MANAGEMENT FUNCTIONS
@@ -2285,45 +1818,31 @@ function cancelTruckEdit() {
 
 // Get the route assigned to a customer name (supports partial matching)
 function getRouteForCustomer(customerName) {
-    if (!customerName || !settingsData.customerRoutes) return null;
+    if (!customerName || !settingsData.customerRoutes || !settingsData.customerRoutes.length) return null;
     // Case-insensitive lookup with partial matching
     const normalizedName = customerName.trim().toUpperCase();
 
     // First try exact match
-    for (const [customer, route] of Object.entries(settingsData.customerRoutes)) {
-        if (customer.toUpperCase() === normalizedName) {
-            return route;
+    for (const entry of settingsData.customerRoutes) {
+        if (entry.customer_name.toUpperCase() === normalizedName) {
+            return entry.route_name;
         }
     }
 
     // Then try partial match (customer name contains the pattern)
     // Sort by pattern length descending to match longest patterns first
-    const sortedEntries = Object.entries(settingsData.customerRoutes)
-        .sort((a, b) => b[0].length - a[0].length);
+    const sortedEntries = [...settingsData.customerRoutes]
+        .sort((a, b) => b.customer_name.length - a.customer_name.length);
 
-    for (const [customer, route] of sortedEntries) {
-        const pattern = customer.toUpperCase();
+    for (const entry of sortedEntries) {
+        const pattern = entry.customer_name.toUpperCase();
         // Check if the invoice customer name contains the assigned pattern
         if (normalizedName.includes(pattern)) {
-            return route;
+            return entry.route_name;
         }
     }
 
     return null;
-}
-
-// Populate route dropdown for customer-route assignment
-function populateCustomerRouteDropdown() {
-    const select = document.getElementById('new-customer-route');
-    if (!select) return;
-
-    select.innerHTML = '<option value="">Select Route</option>';
-    settingsData.routes.forEach(route => {
-        const option = document.createElement('option');
-        option.value = route;
-        option.textContent = route;
-        select.appendChild(option);
-    });
 }
 
 // Populate route filter dropdowns in modals
@@ -2351,225 +1870,6 @@ function populateRouteFilterDropdowns() {
             reportFilter.appendChild(option);
         });
     }
-}
-
-// Add a customer-route assignment
-async function addCustomerRoute() {
-    const customerInput = document.getElementById('new-customer-name');
-    const routeSelect = document.getElementById('new-customer-route');
-
-    const customerName = customerInput.value.trim();
-    const routeName = routeSelect.value;
-
-    if (!customerName) {
-        alert('Please enter a customer name.');
-        return;
-    }
-
-    if (!routeName) {
-        alert('Please select a route.');
-        return;
-    }
-
-    // Check for existing assignment (case-insensitive)
-    const normalizedNewName = customerName.toUpperCase();
-    const existingName = Object.keys(settingsData.customerRoutes).find(c => c.toUpperCase() === normalizedNewName);
-
-    if (existingName) {
-        const existingRoute = settingsData.customerRoutes[existingName];
-        // User requested: "if has already been allocated then dont allocate it again or rather tell me"
-        // A confirmation dialog "tells them" and allows choice.
-        if (!confirm(`Customer "${existingName}" is already assigned to route "${existingRoute}".\n\nDo you want to update this assignment?`)) {
-            return;
-        }
-    }
-
-    // Attempt to save to server
-    try {
-        const response = await apiFetch(`${API_URL}/customer-routes`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                customer_name: customerName,
-                route_name: routeName
-            })
-        });
-
-        if (response.ok) {
-            settingsData.customerRoutes[customerName] = routeName;
-
-            customerInput.value = '';
-            routeSelect.value = '';
-
-            renderCustomerRoutesList();
-            lucide.createIcons();
-        } else {
-            alert('Failed to save customer route assignment.');
-        }
-    } catch (e) {
-        console.error(e);
-        alert('Server error saving assignment.');
-    }
-}
-
-// Remove a customer-route assignment
-async function removeCustomerRoute(customerName) {
-    if (confirm(`Remove route assignment for "${customerName}"?`)) {
-        try {
-            const response = await apiFetch(`${API_URL}/customer-routes/${encodeURIComponent(customerName)}`, {
-                method: 'DELETE'
-            });
-
-            if (response.ok) {
-                delete settingsData.customerRoutes[customerName];
-                renderCustomerRoutesList();
-                lucide.createIcons();
-            } else {
-                alert('Failed to delete assignment.');
-            }
-        } catch (e) {
-            console.error(e);
-            alert('Server error deleting assignment.');
-        }
-    }
-}
-
-// Render customer-route assignments list grouped by route
-function renderCustomerRoutesList() {
-    const listEl = document.getElementById('customer-routes-list');
-    if (!listEl) return;
-
-    const assignments = Object.entries(settingsData.customerRoutes || {});
-
-    if (assignments.length === 0) {
-        listEl.innerHTML = '<div class="settings-empty">No customer-route assignments yet</div>';
-        return;
-    }
-
-    // Group by route
-    const groupedByRoute = {};
-    assignments.forEach(([customer, route]) => {
-        if (!groupedByRoute[route]) {
-            groupedByRoute[route] = [];
-        }
-        groupedByRoute[route].push(customer);
-    });
-
-    // Build HTML
-    let html = '';
-    for (const [route, customers] of Object.entries(groupedByRoute)) {
-        html += `<div class="settings-item-group">
-            <div class="settings-item-group-header">
-                <span class="route-badge">${route}</span>
-                <span class="customer-count">${customers.length} customer${customers.length > 1 ? 's' : ''}</span>
-            </div>`;
-
-        customers.forEach(customer => {
-            const escapedCustomer = customer.replace(/'/g, "\\'").replace(/"/g, "&quot;");
-            html += `
-            <div class="settings-item" id="customer-route-item-${escapedCustomer.replace(/\s/g, '-')}">
-                <div class="settings-item-info">
-                    <span class="settings-item-name">${customer}</span>
-                </div>
-                <div class="settings-item-actions">
-                    <button class="btn-icon btn-edit" onclick="editCustomerRoute('${escapedCustomer}', '${route}')" title="Edit">
-                        <i data-lucide="pencil"></i>
-                    </button>
-                    <button class="btn-icon btn-delete" onclick="removeCustomerRoute('${escapedCustomer}')" title="Remove">
-                        <i data-lucide="trash-2"></i>
-                    </button>
-                </div>
-            </div>`;
-        });
-
-        html += '</div>';
-    }
-
-    listEl.innerHTML = html;
-    lucide.createIcons();
-}
-
-// Edit a customer-route assignment
-function editCustomerRoute(customerName, currentRoute) {
-    const escapedId = customerName.replace(/'/g, "\\'").replace(/"/g, "&quot;").replace(/\s/g, '-');
-    const itemEl = document.getElementById(`customer-route-item-${escapedId}`);
-    if (!itemEl) {
-        // Fallback: find by searching
-        const items = document.querySelectorAll('.settings-item');
-        for (const item of items) {
-            const nameSpan = item.querySelector('.settings-item-name');
-            if (nameSpan && nameSpan.textContent === customerName) {
-                showCustomerRouteEditForm(item, customerName, currentRoute);
-                return;
-            }
-        }
-        return;
-    }
-    showCustomerRouteEditForm(itemEl, customerName, currentRoute);
-}
-
-function showCustomerRouteEditForm(itemEl, customerName, currentRoute) {
-    // Build route options
-    const routeOptions = settingsData.routes.map(r =>
-        `<option value="${r}" ${r === currentRoute ? 'selected' : ''}>${r}</option>`
-    ).join('');
-
-    itemEl.innerHTML = `
-        <div class="settings-edit-form customer-route-edit">
-            <input type="text" class="settings-edit-input" id="edit-customer-name" value="${customerName}">
-            <select id="edit-customer-route">
-                ${routeOptions}
-            </select>
-            <div class="settings-edit-actions">
-                <button class="btn btn-primary btn-sm" onclick="saveCustomerRouteEdit('${customerName.replace(/'/g, "\\'")}')">
-                    <i data-lucide="check"></i> Save
-                </button>
-                <button class="btn btn-secondary btn-sm" onclick="renderCustomerRoutesList()">
-                    <i data-lucide="x"></i> Cancel
-                </button>
-            </div>
-        </div>
-    `;
-
-    // Focus input and select all
-    const input = document.getElementById('edit-customer-name');
-    input.focus();
-    input.select();
-
-    // Allow Enter to save, Escape to cancel
-    input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            saveCustomerRouteEdit(customerName);
-        } else if (e.key === 'Escape') {
-            renderCustomerRoutesList();
-        }
-    });
-
-    lucide.createIcons();
-}
-
-function saveCustomerRouteEdit(originalCustomerName) {
-    const newCustomerName = document.getElementById('edit-customer-name').value.trim();
-    const newRoute = document.getElementById('edit-customer-route').value;
-
-    if (!newCustomerName) {
-        alert('Please enter a customer name.');
-        return;
-    }
-
-    if (!newRoute) {
-        alert('Please select a route.');
-        return;
-    }
-
-    // Remove old entry
-    delete settingsData.customerRoutes[originalCustomerName];
-
-    // Add new entry
-    settingsData.customerRoutes[newCustomerName] = newRoute;
-
-    saveSettings();
-    renderCustomerRoutesList();
 }
 
 // =============================================
@@ -2841,73 +2141,6 @@ filterReports = async function () {
     }
 };
 
-// =============================================
-// UPDATED SETTINGS MODAL FUNCTIONS
-// =============================================
-
-// Override openSettingsModal to include customer routes
-const originalOpenSettingsModal = openSettingsModal;
-openSettingsModal = function () {
-    const modal = document.getElementById('settings-modal');
-    modal.classList.remove('hidden');
-    modal.classList.add('visible');
-
-    // Populate the truck form dropdowns with current personnel
-    populateTruckFormDropdowns();
-
-    // Populate customer route dropdown
-    populateCustomerRouteDropdown();
-
-    // Populate customer suggestions datalist
-    populateCustomerSuggestions();
-
-    // Render all settings lists
-    renderSettingsList('drivers');
-    renderSettingsList('assistants');
-    renderSettingsList('checkers');
-    renderSettingsList('routes');
-    renderCustomerRoutesList();
-    renderTrucksList();
-
-    lucide.createIcons();
-};
-
-async function populateCustomerSuggestions() {
-    const dataList = document.getElementById('customer-suggestions');
-    if (!dataList) return;
-
-    dataList.innerHTML = '';
-
-    // Collect unique customers
-    const customers = new Set();
-
-    try {
-        // Fetch ALL customers from database (pending and allocated)
-        const response = await apiFetch(`${API_URL}/customers`);
-        if (response.ok) {
-            const data = await response.json();
-            data.customers.forEach(name => customers.add(name));
-        }
-    } catch (error) {
-        console.warn('Could not fetch customers from API:', error);
-    }
-
-    // Add from existing customer routes (in case some aren't in DB yet)
-    if (settingsData && settingsData.customerRoutes) {
-        Object.keys(settingsData.customerRoutes).forEach(name => {
-            customers.add(name);
-        });
-    }
-
-    // Convert to sorted array
-    const sortedCustomers = Array.from(customers).sort();
-
-    sortedCustomers.forEach(customer => {
-        const option = document.createElement('option');
-        option.value = customer;
-        dataList.appendChild(option);
-    });
-}
 
 // =============================================
 // ADDITIONAL EVENT LISTENERS
@@ -2915,12 +2148,6 @@ async function populateCustomerSuggestions() {
 
 // Add event listeners for new functionality when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-    // Customer route button
-    const addCustomerRouteBtn = document.getElementById('add-customer-route-btn');
-    if (addCustomerRouteBtn) {
-        addCustomerRouteBtn.addEventListener('click', addCustomerRoute);
-    }
-
     // Invoice route filter
     const invoiceRouteFilter = document.getElementById('invoice-route-filter');
     if (invoiceRouteFilter) {
@@ -3137,6 +2364,38 @@ function hideLandingPage() {
     }
 }
 
+/**
+ * Restore the app UI for an already-authenticated user without re-running login.
+ * Called when index.html loads and localStorage already contains a valid session,
+ * or when a landing card is clicked while a session is already active.
+ *
+ * @param {string} [intent] - 'manifest' | 'report' | undefined
+ *   undefined  → default view for the user's role
+ *   'report'   → open the reports modal immediately
+ *   'manifest' → show manifest view (default for ADMIN/DISPATCH)
+ */
+function restoreSessionUI(intent) {
+    // Hydrate runtime variables from localStorage (set during original login)
+    currentUser     = localStorage.getItem('currentUser');
+    currentUserRole = localStorage.getItem('userRole') || ROLE_REPORTS_ONLY;
+    // currentUserId is not persisted to localStorage; leave null (only needed for
+    // the settings page "YOU" badge, which lives in settings.js now)
+
+    // Dismiss landing overlay
+    hideLandingPage();
+
+    // Apply role-based UI visibility
+    applyPermissions();
+
+    // Navigate to the appropriate view:
+    // - Reports-only users cannot use the manifest, so always open reports
+    // - An explicit 'report' intent also opens reports
+    // - Everything else stays on the default manifest view
+    if (intent === 'report' || currentUserRole === ROLE_REPORTS_ONLY) {
+        showReports();
+    }
+}
+
 function openLoginModal(intent) {
     loginIntent = intent;
     const modal = document.getElementById('login-modal');
@@ -3256,6 +2515,7 @@ async function finalizeLogin(user) {
     currentUserId = user.id;
     currentUserRole = user.role || ROLE_REPORTS_ONLY;
     setCurrentUser(user.username);
+    setUserRole(user.role);
 
 
     // Explicitly re-initialize the main form data
@@ -3295,7 +2555,6 @@ function applyPermissions() {
     const previewSection = document.querySelector('.preview-section');
     const settingsBtn = document.getElementById('settings-btn');
     const resetBtn = document.getElementById('reset-btn');
-    const usersTabKey = document.getElementById('tab-btn-users');
 
     const isAdmin    = currentUserRole === ROLE_ADMIN;
     const isDispatch = currentUserRole === ROLE_DISPATCH;
@@ -3318,302 +2577,11 @@ function applyPermissions() {
     // Settings & Users tab — ADMIN only
     if (isAdmin) {
         if (settingsBtn) settingsBtn.classList.remove('guest-hidden');
-        if (usersTabKey) usersTabKey.style.display = 'block';
     } else {
         if (settingsBtn) settingsBtn.classList.add('guest-hidden');
-        if (usersTabKey) usersTabKey.style.display = 'none';
     }
 }
 
-// ── User Management ─────────────────────────────────────────────────────────
-
-// Password validation (mirrors backend: 10+ chars, 1 upper, 1 lower, 1 digit)
-function validatePassword(password) {
-    const errors = [];
-    if (password.length < 10) errors.push('At least 10 characters');
-    if (!/[A-Z]/.test(password)) errors.push('1 uppercase letter');
-    if (!/[a-z]/.test(password)) errors.push('1 lowercase letter');
-    if (!/[0-9]/.test(password)) errors.push('1 digit');
-    return errors;
-}
-
-function updatePasswordStrength(password, strengthEl, hintEl) {
-    const errors = validatePassword(password);
-    const bars = strengthEl.querySelectorAll('.bar');
-    const score = 4 - errors.length; // 0-4
-
-    bars.forEach((bar, i) => {
-        bar.className = 'bar';
-        if (i < score) {
-            bar.classList.add(score <= 1 ? 'weak' : score <= 2 ? 'medium' : 'strong');
-        }
-    });
-
-    if (!password) {
-        hintEl.textContent = '';
-        hintEl.className = 'password-hint';
-    } else if (errors.length > 0) {
-        hintEl.textContent = 'Need: ' + errors.join(', ');
-        hintEl.className = 'password-hint error';
-    } else {
-        hintEl.textContent = 'Strong password';
-        hintEl.className = 'password-hint';
-    }
-    return errors;
-}
-
-// Wire password strength indicators
-document.addEventListener('DOMContentLoaded', () => {
-    const newPwInput = document.getElementById('new-user-password');
-    if (newPwInput) {
-        newPwInput.addEventListener('input', () => {
-            updatePasswordStrength(
-                newPwInput.value,
-                document.getElementById('new-user-pw-strength'),
-                document.getElementById('new-user-pw-hint')
-            );
-        });
-    }
-    const resetPwInput = document.getElementById('reset-pw-input');
-    if (resetPwInput) {
-        resetPwInput.addEventListener('input', () => {
-            updatePasswordStrength(
-                resetPwInput.value,
-                document.getElementById('reset-pw-strength'),
-                document.getElementById('reset-pw-hint')
-            );
-        });
-    }
-});
-
-async function renderUsersList() {
-    const list = document.getElementById('users-list');
-    list.innerHTML = '<div style="text-align:center; padding:1rem;">Loading users...</div>';
-
-    try {
-        const response = await apiFetch(`${API_URL}/users`);
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        const data = await response.json();
-        const apiUsers = data.users || [];
-
-        list.innerHTML = '';
-
-        apiUsers.forEach((user) => {
-            const div = document.createElement('div');
-            div.className = 'user-card';
-
-            const isSelf = currentUserId && currentUserId === user.id;
-            const roleBadgeClass = user.role === ROLE_ADMIN ? 'full-access' :
-                                   user.role === ROLE_DISPATCH ? 'dispatch' : 'reports-only';
-            const roleBadgeText = user.role === ROLE_ADMIN ? 'Admin' :
-                                  user.role === ROLE_DISPATCH ? 'Dispatch' : 'Reports Only';
-            const statusClass = user.is_active ? 'active' : 'inactive';
-            const statusText = user.is_active ? 'Active' : 'Inactive';
-
-            div.innerHTML = `
-                <div class="user-card-info">
-                    <span class="user-card-name">${user.username} ${isSelf ? '<span class="self-badge">YOU</span>' : ''}</span>
-                    <div class="user-card-meta">
-                        <span class="role-badge ${roleBadgeClass}">${roleBadgeText}</span>
-                        <span class="status-badge ${statusClass}">${statusText}</span>
-                    </div>
-                </div>
-                <div class="user-card-actions">
-                    ${!isSelf ? `
-                        <select class="btn-sm" style="font-size:0.75rem; padding:0.3rem 0.4rem;" onchange="handleRoleChange(${user.id}, this.value, this)" title="Change role">
-                            <option value="ADMIN"        ${user.role === 'ADMIN'        ? 'selected' : ''}>Admin</option>
-                            <option value="DISPATCH"     ${user.role === 'DISPATCH'     ? 'selected' : ''}>Dispatch</option>
-                            <option value="REPORTS_ONLY" ${user.role === 'REPORTS_ONLY' ? 'selected' : ''}>Reports Only</option>
-                        </select>
-                        <label class="toggle-switch" title="${user.is_active ? 'Deactivate' : 'Activate'} user">
-                            <input type="checkbox" ${user.is_active ? 'checked' : ''} onchange="handleStatusToggle(${user.id}, this.checked)">
-                            <span class="toggle-slider"></span>
-                        </label>
-                    ` : '<span style="font-size:0.75rem; color:var(--text-light);">Cannot edit self</span>'}
-                    <button class="btn-icon" onclick="showPasswordResetModal(${user.id}, '${user.username}')" title="Reset password">
-                        <i data-lucide="key"></i>
-                    </button>
-                </div>
-            `;
-            list.appendChild(div);
-        });
-        lucide.createIcons();
-    } catch (error) {
-        console.error('Failed to load users:', error);
-        list.innerHTML = '<div style="text-align:center; color:red; padding:1rem;">Failed to load users</div>';
-    }
-}
-
-async function addUser() {
-    const nameInput = document.getElementById('new-user-name');
-    const pwdInput = document.getElementById('new-user-password');
-    const roleSelect = document.getElementById('new-user-role');
-    const addBtn = document.getElementById('add-user-btn');
-
-    const username = nameInput.value.trim();
-    const password = pwdInput.value.trim();
-    const role = roleSelect.value;
-
-    if (!username || !password) {
-        alert('Username and Password are required');
-        return;
-    }
-
-    const pwErrors = validatePassword(password);
-    if (pwErrors.length > 0) {
-        alert('Password does not meet requirements:\n• ' + pwErrors.join('\n• '));
-        return;
-    }
-
-    addBtn.disabled = true;
-    addBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Adding...';
-    lucide.createIcons();
-
-    try {
-        const response = await apiFetch(`${API_URL}/users`, {
-            method: 'POST',
-            body: JSON.stringify({ username, password, role, is_active: true })
-        });
-
-        if (!response.ok) {
-            const err = await response.json();
-            alert(err.detail || 'Failed to create user');
-            return;
-        }
-
-        await renderUsersList();
-        nameInput.value = '';
-        pwdInput.value = '';
-        roleSelect.value = ROLE_ADMIN;
-        // Reset strength indicator
-        updatePasswordStrength('', document.getElementById('new-user-pw-strength'), document.getElementById('new-user-pw-hint'));
-    } catch (error) {
-        console.error('Failed to add user:', error);
-        alert('Failed to add user. Please check the server.');
-    } finally {
-        addBtn.disabled = false;
-        addBtn.innerHTML = '<i data-lucide="user-plus"></i> Add User';
-        lucide.createIcons();
-    }
-}
-
-async function handleRoleChange(userId, newRole, selectEl) {
-    try {
-        const response = await apiFetch(`${API_URL}/users/${userId}/role`, {
-            method: 'PUT',
-            body: JSON.stringify({ role: newRole })
-        });
-
-        if (!response.ok) {
-            const err = await response.json();
-            alert(err.detail || 'Failed to update role');
-            await renderUsersList(); // revert UI
-            return;
-        }
-        await renderUsersList();
-    } catch (error) {
-        console.error('Failed to update role:', error);
-        alert('Failed to update role.');
-        await renderUsersList();
-    }
-}
-
-async function handleStatusToggle(userId, isActive) {
-    try {
-        const response = await apiFetch(`${API_URL}/users/${userId}/status`, {
-            method: 'PUT',
-            body: JSON.stringify({ is_active: isActive })
-        });
-
-        if (!response.ok) {
-            const err = await response.json();
-            alert(err.detail || 'Failed to update status');
-            await renderUsersList(); // revert UI
-            return;
-        }
-        await renderUsersList();
-    } catch (error) {
-        console.error('Failed to update status:', error);
-        alert('Failed to update status.');
-        await renderUsersList();
-    }
-}
-
-// Password Reset Sub-Modal
-let resetPasswordUserId = null;
-
-function showPasswordResetModal(userId, username) {
-    resetPasswordUserId = userId;
-    document.getElementById('reset-pw-username').textContent = username;
-    document.getElementById('reset-pw-input').value = '';
-    document.getElementById('reset-pw-confirm').value = '';
-    updatePasswordStrength('', document.getElementById('reset-pw-strength'), document.getElementById('reset-pw-hint'));
-    document.getElementById('password-reset-modal').classList.add('visible');
-    lucide.createIcons();
-}
-
-function hidePasswordResetModal() {
-    resetPasswordUserId = null;
-    document.getElementById('password-reset-modal').classList.remove('visible');
-}
-
-async function submitPasswordReset() {
-    const password = document.getElementById('reset-pw-input').value;
-    const confirm = document.getElementById('reset-pw-confirm').value;
-    const btn = document.getElementById('reset-pw-submit-btn');
-
-    if (!password) {
-        alert('Please enter a new password.');
-        return;
-    }
-
-    if (password !== confirm) {
-        alert('Passwords do not match.');
-        return;
-    }
-
-    const pwErrors = validatePassword(password);
-    if (pwErrors.length > 0) {
-        alert('Password does not meet requirements:\n• ' + pwErrors.join('\n• '));
-        return;
-    }
-
-    btn.disabled = true;
-    btn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Resetting...';
-    lucide.createIcons();
-
-    try {
-        const response = await apiFetch(`${API_URL}/users/${resetPasswordUserId}/password`, {
-            method: 'PUT',
-            body: JSON.stringify({ password })
-        });
-
-        if (!response.ok) {
-            const err = await response.json();
-            alert(err.detail || 'Failed to reset password');
-            return;
-        }
-
-        alert('Password reset successfully.');
-        hidePasswordResetModal();
-    } catch (error) {
-        console.error('Failed to reset password:', error);
-        alert('Failed to reset password.');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i data-lucide="check"></i> Reset Password';
-        lucide.createIcons();
-    }
-}
-
-// Expose user management functions globally (used in onclick handlers)
-window.handleRoleChange = handleRoleChange;
-window.handleStatusToggle = handleStatusToggle;
-window.showPasswordResetModal = showPasswordResetModal;
-window.hidePasswordResetModal = hidePasswordResetModal;
-window.submitPasswordReset = submitPasswordReset;
 
 // Logout Function
 function handleLogout() {

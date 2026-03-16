@@ -821,6 +821,7 @@ def get_dispatched_invoices(
                 ri.customer_number, ri.invoice_date, ri.area,
                 ri.sku, ri.value, ri.weight,
                 cr.route_name,
+                cr.delivery_mode,
                 du.status
             FROM reports r
             INNER JOIN report_items ri ON r.id = ri.report_id
@@ -873,7 +874,7 @@ def get_dispatched_invoices(
             "manifest_number", "date_dispatched", "driver", "assistant",
             "checker", "reg_number", "invoice_number", "order_number",
             "customer_name", "customer_number", "invoice_date", "area",
-            "sku", "value", "weight", "route_name", "delivery_status",
+            "sku", "value", "weight", "route_name", "delivery_mode", "delivery_status",
         ]
         results = [dict(zip(keys, row)) for row in rows]
         return results, total
@@ -1106,24 +1107,26 @@ def delete_truck(reg: str) -> bool:
 # CUSTOMER ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_customer_routes() -> Dict[str, str]:
+def get_customer_routes() -> List[Dict]:
     db = get_db_session()
     try:
         result = execute_query(
-            db, "SELECT customer_name, route_name FROM customer_routes"
+            db,
+            "SELECT customer_name, route_name, delivery_mode "
+            "FROM customer_routes ORDER BY route_name, customer_name",
         )
-        return {r._mapping["customer_name"]: r._mapping["route_name"] for r in result.fetchall()}
+        return [dict(r._mapping) for r in result.fetchall()]
     finally:
         db.close()
 
 
-def add_customer_route(customer_name: str, route_name: str) -> bool:
+def add_customer_route(customer_name: str, route_name: str, delivery_mode: str = "INTERNAL") -> bool:
     db = get_db_session()
     try:
         execute_query(
             db,
-            "REPLACE INTO customer_routes (customer_name, route_name) VALUES (?, ?)",
-            (customer_name, route_name),
+            "REPLACE INTO customer_routes (customer_name, route_name, delivery_mode) VALUES (?, ?, ?)",
+            (customer_name, route_name, delivery_mode),
         )
         db.commit()
         return True

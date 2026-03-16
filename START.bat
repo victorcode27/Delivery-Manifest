@@ -24,8 +24,8 @@ echo Your IP Address: %IP%
 echo Other PCs can access: http://%IP%:8000
 echo.
 
-:: Start server with 4 workers for multi-user support
-start "Invoice API Server" cmd /k "python api_server.py"
+:: Start the modular backend (delivery routes live here)
+start "Invoice API Server" cmd /k "python -m uvicorn delivery_manifest_backend.app.main:app --host 0.0.0.0 --port 8000 --reload"
 
 :: Wait for server to start
 timeout /t 3 /nobreak > nul

@@ -7,7 +7,7 @@ uploaded manifests, invoices, reports, settings, trucks, and customer routes.
 
 from typing import List, Optional
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 
 
 # ── Uploaded manifest files ────────────────────────────────────────────────────
@@ -130,3 +130,16 @@ class TruckRequest(BaseModel):
 class CustomerRouteRequest(BaseModel):
     customer_name: str
     route_name:    str
+    delivery_mode: str = "INTERNAL"
+
+    @validator("delivery_mode")
+    def _valid_mode(cls, v: str) -> str:
+        if v not in ("INTERNAL", "THIRD_PARTY"):
+            raise ValueError("delivery_mode must be INTERNAL or THIRD_PARTY")
+        return v
+
+
+class CustomerRouteResponse(BaseModel):
+    customer_name: str
+    route_name:    str
+    delivery_mode: str = "INTERNAL"

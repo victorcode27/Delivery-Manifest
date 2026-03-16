@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - BRD Distribution</title>
+    <!-- Modern Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Styles -->
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="settings.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="header-content branding">
+                <div class="logo-box">
+                    <img src="logo.png" alt="Company Logo" class="logo-img">
+                </div>
+                <div class="title-box">
+                    <h1>BRD DISTRIBUTION</h1>
+                    <span class="subtitle">Settings</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-secondary" onclick="window.location.href='index.html'">
+                    <i data-lucide="arrow-left"></i> Back to Main
+                </button>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <section class="card">
+
+                <!-- Settings Tabs -->
+                <div class="settings-tabs">
+                    <button class="settings-tab active" data-tab="drivers">Drivers</button>
+                    <button class="settings-tab" data-tab="assistants">Assistants</button>
+                    <button class="settings-tab" data-tab="checkers">Checkers</button>
+                    <button class="settings-tab" data-tab="routes">Routes/Areas</button>
+                    <button class="settings-tab" data-tab="customerRoutes">Customer Routes</button>
+                    <button class="settings-tab" data-tab="trucks">Trucks</button>
+                    <button class="settings-tab" data-tab="users">Users</button>
+                </div>
+
+                <!-- Tab Content: Drivers -->
+                <div class="settings-tab-content active" id="tab-drivers">
+                    <div class="settings-add-form">
+                        <input type="text" id="new-driver-name" placeholder="Enter driver name">
+                        <button id="add-driver-btn" class="btn btn-primary">
+                            <i data-lucide="plus"></i> Add
+                        </button>
+                    </div>
+                    <div class="settings-list" id="drivers-list">
+                        <!-- Drivers will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Tab Content: Assistants -->
+                <div class="settings-tab-content" id="tab-assistants">
+                    <div class="settings-add-form">
+                        <input type="text" id="new-assistant-name" placeholder="Enter assistant name">
+                        <button id="add-assistant-btn" class="btn btn-primary">
+                            <i data-lucide="plus"></i> Add
+                        </button>
+                    </div>
+                    <div class="settings-list" id="assistants-list">
+                        <!-- Assistants will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Tab Content: Checkers -->
+                <div class="settings-tab-content" id="tab-checkers">
+                    <div class="settings-add-form">
+                        <input type="text" id="new-checker-name" placeholder="Enter checker name">
+                        <button id="add-checker-btn" class="btn btn-primary">
+                            <i data-lucide="plus"></i> Add
+                        </button>
+                    </div>
+                    <div class="settings-list" id="checkers-list">
+                        <!-- Checkers will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Tab Content: Routes/Areas -->
+                <div class="settings-tab-content" id="tab-routes">
+                    <div class="settings-add-form">
+                        <input type="text" id="new-route-name" placeholder="Enter route/area name">
+                        <button id="add-route-btn" class="btn btn-primary">
+                            <i data-lucide="plus"></i> Add
+                        </button>
+                    </div>
+                    <div class="settings-list" id="routes-list">
+                        <!-- Routes will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Tab Content: Customer Routes -->
+                <div class="settings-tab-content" id="tab-customerRoutes">
+                    <div class="settings-info-text">
+                        <i data-lucide="info"></i>
+                        <span>Assign customers to routes. Invoices will be filtered based on these assignments.</span>
+                    </div>
+                    <div class="settings-add-form customer-route-form">
+                        <input type="text" id="new-customer-name" placeholder="Customer name"
+                            list="customer-suggestions">
+                        <datalist id="customer-suggestions"></datalist>
+                        <select id="new-customer-route">
+                            <option value="">Select Route</option>
+                        </select>
+                        <select id="new-customer-delivery-mode">
+                            <option value="INTERNAL">Internal</option>
+                            <option value="THIRD_PARTY">Third Party</option>
+                        </select>
+                        <button id="add-customer-route-btn" class="btn btn-primary">
+                            <i data-lucide="plus"></i> Assign
+                        </button>
+                    </div>
+                    <div class="settings-list" id="customer-routes-list">
+                        <!-- Customer-Route assignments will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Tab Content: Trucks -->
+                <div class="settings-tab-content" id="tab-trucks">
+                    <div class="settings-add-form truck-form">
+                        <input type="text" id="new-truck-reg" placeholder="Registration #">
+                        <select id="new-truck-driver">
+                            <option value="">Default Driver (optional)</option>
+                        </select>
+                        <select id="new-truck-assistant">
+                            <option value="">Default Assistant (optional)</option>
+                        </select>
+                        <select id="new-truck-checker">
+                            <option value="">Default Checker (optional)</option>
+                        </select>
+                        <button id="add-truck-btn" class="btn btn-primary">
+                            <i data-lucide="plus"></i> Add
+                        </button>
+                    </div>
+                    <div class="settings-list" id="trucks-list">
+                        <!-- Trucks will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Tab Content: Users (ADMIN Only) -->
+                <div class="settings-tab-content" id="tab-users">
+                    <div class="settings-info-text">
+                        <i data-lucide="shield"></i>
+                        <span>Manage users and access levels. <strong>Admin</strong> = all features. <strong>Dispatch</strong> = manifest ops, no admin. <strong>Reports Only</strong> = view reports only. <strong>Driver</strong> = mobile app delivery tracking only.</span>
+                    </div>
+
+                    <!-- Add User Form -->
+                    <div class="user-add-form">
+                        <div class="form-group">
+                            <label for="new-user-name">Username</label>
+                            <input type="text" id="new-user-name" placeholder="Enter username" autocomplete="off">
+                        </div>
+                        <div class="form-group">
+                            <label for="new-user-password">Password</label>
+                            <input type="password" id="new-user-password" placeholder="Min 10 chars, upper+lower+digit" autocomplete="new-password">
+                            <div class="password-strength" id="new-user-pw-strength">
+                                <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                            </div>
+                            <span class="password-hint" id="new-user-pw-hint"></span>
+                        </div>
+                        <div class="form-group">
+                            <label for="new-user-role">Role</label>
+                            <select id="new-user-role">
+                                <option value="ADMIN">Admin</option>
+                                <option value="DISPATCH">Dispatch</option>
+                                <option value="REPORTS_ONLY">Reports Only</option>
+                                <option value="DRIVER">Driver (Mobile App)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="align-self: end;">
+                            <button id="add-user-btn" class="btn btn-primary full-width">
+                                <i data-lucide="user-plus"></i> Add User
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Users List -->
+                    <div class="settings-list" id="users-list">
+                        <!-- Users will be rendered by JS -->
+                    </div>
+                </div>
+
+                <!-- Footer hint -->
+                <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+                    <span class="settings-hint">Changes are saved automatically</span>
+                </div>
+
+            </section>
+        </main>
+    </div>
+
+    <!-- Password Reset Sub-Modal -->
+    <div id="password-reset-modal" class="sub-modal-overlay">
+        <div class="sub-modal">
+            <h3><i data-lucide="key"></i> Reset Password</h3>
+            <p style="font-size: 0.85rem; color: var(--text-light); margin-bottom: 1rem;">
+                Resetting password for <strong id="reset-pw-username"></strong>
+            </p>
+            <div class="form-group">
+                <label for="reset-pw-input">New Password</label>
+                <input type="password" id="reset-pw-input" placeholder="Min 10 chars, upper+lower+digit" autocomplete="new-password">
+                <div class="password-strength" id="reset-pw-strength">
+                    <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                </div>
+                <span class="password-hint" id="reset-pw-hint"></span>
+            </div>
+            <div class="form-group">
+                <label for="reset-pw-confirm">Confirm Password</label>
+                <input type="password" id="reset-pw-confirm" placeholder="Re-enter password">
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-secondary" onclick="hidePasswordResetModal()">Cancel</button>
+                <button class="btn btn-primary" id="reset-pw-submit-btn" onclick="submitPasswordReset()">
+                    <i data-lucide="check"></i> Reset Password
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="auth.js"></script>
+    <script src="settings.js"></script>
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+
+</html>

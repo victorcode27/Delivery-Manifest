@@ -11,6 +11,8 @@
 
 const DS_API = '/api/delivery';
 
+let dsUserRole = null;   // populated in dsInit() from localStorage
+
 let dsState = {
     manifests: [],   // all manifests from last API load
     search:       '',
@@ -19,6 +21,13 @@ let dsState = {
     statusFilter: '',
     loading:      false,
 };
+
+// Statuses for which a manual confirmation button is offered
+const DS_ACTIONABLE_STATUSES = ['PENDING', 'IN_TRANSIT'];
+
+function dsCanConfirm() {
+    return dsUserRole === 'ADMIN' || dsUserRole === 'DISPATCH';
+}
 
 // ── Status badge helpers ───────────────────────────────────────────────────
 
@@ -190,16 +199,34 @@ async function openDetail(manifestNumber) {
 }
 
 function renderDetailModal(manifest) {
-    const body  = document.getElementById('ds-modal-body');
-    const items = manifest.items || [];
+    const body       = document.getElementById('ds-modal-body');
+    const items      = manifest.items || [];
+    const canConfirm = dsCanConfirm();
+    const colCount   = canConfirm ? 8 : 7;
 
     const rowsHtml = items.length
-        ? items.map(item => `
+        ? items.map(item => {
+            const status = item.delivery_status || 'PENDING';
+            const actionCell = canConfirm
+                ? (DS_ACTIONABLE_STATUSES.includes(status)
+                    ? `<button class="ds-mark-delivered-btn report-btn report-btn-primary"
+                               data-item-id="${item.report_item_id}"
+                               data-invoice="${dsEsc(item.invoice_number)}"
+                               data-manifest="${dsEsc(manifest.manifest_number)}"
+                               style="font-size:0.75rem;padding:3px 10px;white-space:nowrap;">
+                           <i data-lucide="check-circle"></i> Mark Delivered
+                       </button>`
+                    : '—')
+                : '';
+            const modeBadge = item.delivery_mode === 'THIRD_PARTY'
+                ? ` <span style="font-size:0.68rem;font-weight:600;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:3px;padding:1px 5px;vertical-align:middle;" title="Third Party delivery">3P</span>`
+                : '';
+            return `
             <tr>
                 <td>${dsEsc(item.invoice_number || '—')}</td>
-                <td>${dsEsc(item.customer_name  || '—')}</td>
+                <td>${dsEsc(item.customer_name  || '—')}${modeBadge}</td>
                 <td>${dsEsc(item.area           || '—')}</td>
-                <td>${invoiceStatusBadge(item.delivery_status || 'PENDING')}</td>
+                <td>${invoiceStatusBadge(status)}</td>
                 <td class="ds-notes">${dsEsc(item.notes || '—')}</td>
                 <td>${item.has_pod && item.pod_image_path
                     ? `<button class="ds-pod-btn report-btn report-btn-secondary"
@@ -210,8 +237,23 @@ function renderDetailModal(manifest) {
                     : '—'
                 }</td>
                 <td>${item.updated_at ? dsFormatDate(item.updated_at) : '—'}</td>
-            </tr>`).join('')
-        : `<tr><td colspan="7" style="text-align:center;color:#94a3b8">No invoices found</td></tr>`;
+                ${canConfirm ? `<td style="white-space:nowrap">${actionCell}</td>` : ''}
+            </tr>`;
+        }).join('')
+        : `<tr><td colspan="${colCount}" style="text-align:center;color:#94a3b8">No invoices found</td></tr>`;
+
+    const hasUnresolved = items.some(item =>
+        DS_ACTIONABLE_STATUSES.includes(item.delivery_status || 'PENDING')
+    );
+    const bulkBtnHtml = (canConfirm && hasUnresolved)
+        ? `<div style="margin-bottom:12px;text-align:right;">
+               <button class="ds-bulk-confirm-btn report-btn report-btn-primary"
+                       data-manifest="${dsEsc(manifest.manifest_number)}"
+                       style="font-size:0.82rem;padding:5px 14px;">
+                   <i data-lucide="check-circle-2"></i> Confirm Entire Manifest Delivered
+               </button>
+           </div>`
+        : '';
 
     body.innerHTML = `
         <div class="ds-modal-info">
@@ -220,6 +262,7 @@ function renderDetailModal(manifest) {
             <span><strong>Overall Status:</strong> ${manifestStatusBadge(manifest.manifest_status || 'PENDING')}</span>
             <span><strong>Invoices:</strong> ${items.length}</span>
         </div>
+        ${bulkBtnHtml}
         <div class="table-container ds-detail-table">
             <table>
                 <thead>
@@ -231,6 +274,7 @@ function renderDetailModal(manifest) {
                         <th>Notes</th>
                         <th>PoD</th>
                         <th>Last Updated</th>
+                        ${canConfirm ? '<th>Actions</th>' : ''}
                     </tr>
                 </thead>
                 <tbody>${rowsHtml}</tbody>
@@ -250,6 +294,96 @@ async function viewPodFile(path) {
         setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (e) {
         alert(`Could not load PoD file: ${e.message}`);
+    }
+}
+
+async function markDelivered(reportItemId, invoiceNumber, manifestNumber) {
+    if (!confirm(`Mark invoice ${invoiceNumber} as Delivered?`)) return;
+
+    // Disable the button immediately to prevent duplicate submissions
+    const btn = document.querySelector(`.ds-mark-delivered-btn[data-item-id="${reportItemId}"]`);
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = 'Saving…';
+    }
+
+    try {
+        const res = await apiFetch(`${DS_API}/updates/${reportItemId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ status: 'DELIVERED' }),
+        });
+
+        if (res.ok) {
+            // Re-fetch the detail view so the row reflects the new status
+            openDetail(manifestNumber);
+            // Refresh the manifest list so summary counts update
+            loadManifests();
+        } else {
+            const err = await res.json().catch(() => ({}));
+            alert(err.detail || 'Failed to update delivery status.');
+            // Re-enable the button on failure so the user can retry
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i data-lucide="check-circle"></i> Mark Delivered';
+                lucide.createIcons();
+            }
+        }
+    } catch (e) {
+        console.error('[DeliveryStatus] markDelivered error:', e);
+        alert('Server error updating delivery status.');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i data-lucide="check-circle"></i> Mark Delivered';
+            lucide.createIcons();
+        }
+    }
+}
+
+async function bulkConfirmManifest(manifestNumber) {
+    if (!confirm(
+        `Mark ALL unresolved invoices in manifest ${manifestNumber} as Delivered?\n\n` +
+        `Already-resolved invoices (Failed, Partial, Returned, Delivered) will not be changed.`
+    )) return;
+
+    const btn = document.querySelector(`.ds-bulk-confirm-btn[data-manifest="${manifestNumber}"]`);
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = 'Saving…';
+    }
+
+    try {
+        const res = await apiFetch(
+            `${DS_API}/manifests/${encodeURIComponent(manifestNumber)}/bulk-confirm`,
+            { method: 'POST' }
+        );
+
+        if (res.ok) {
+            const data = await res.json();
+            // Re-fetch detail and list so everything reflects the new statuses
+            openDetail(manifestNumber);
+            loadManifests();
+            // Brief success notice in the button area (detail will re-render immediately)
+            console.info(
+                `[DeliveryStatus] Bulk confirm: manifest=${manifestNumber} ` +
+                `updated=${data.updated} skipped=${data.skipped}`
+            );
+        } else {
+            const err = await res.json().catch(() => ({}));
+            alert(err.detail || 'Failed to bulk-confirm manifest.');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i data-lucide="check-circle-2"></i> Confirm Entire Manifest Delivered';
+                lucide.createIcons();
+            }
+        }
+    } catch (e) {
+        console.error('[DeliveryStatus] bulkConfirmManifest error:', e);
+        alert('Server error confirming manifest.');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i data-lucide="check-circle-2"></i> Confirm Entire Manifest Delivered';
+            lucide.createIcons();
+        }
     }
 }
 
@@ -297,6 +431,7 @@ function handleSearch() {
 
 function dsInit() {
     requireAuth();
+    dsUserRole = getUserRole();
 
     document.getElementById('ds-apply-btn').addEventListener('click', applyFilters);
     document.getElementById('ds-reset-btn').addEventListener('click', resetFilters);
@@ -311,7 +446,7 @@ function dsInit() {
         if (btn) openDetail(btn.dataset.manifest);
     });
 
-    // Close modal on backdrop click; also handle PoD view buttons inside modal
+    // Close modal on backdrop click; handle PoD view and Mark Delivered buttons inside modal
     document.getElementById('ds-detail-modal').addEventListener('click', (e) => {
         if (e.target === document.getElementById('ds-detail-modal')) {
             closeDetail();
@@ -319,6 +454,18 @@ function dsInit() {
         }
         const podBtn = e.target.closest('.ds-pod-btn');
         if (podBtn) viewPodFile(podBtn.dataset.podPath);
+
+        const confirmBtn = e.target.closest('.ds-mark-delivered-btn');
+        if (confirmBtn) {
+            markDelivered(
+                parseInt(confirmBtn.dataset.itemId, 10),
+                confirmBtn.dataset.invoice,
+                confirmBtn.dataset.manifest,
+            );
+        }
+
+        const bulkBtn = e.target.closest('.ds-bulk-confirm-btn');
+        if (bulkBtn) bulkConfirmManifest(bulkBtn.dataset.manifest);
     });
 
     loadManifests();

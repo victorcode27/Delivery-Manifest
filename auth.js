@@ -27,9 +27,18 @@ function setCurrentUser(username) {
     }
 }
 
+function setUserRole(role) {
+    if (role) localStorage.setItem('userRole', role);
+}
+
+function getUserRole() {
+    return localStorage.getItem('userRole') || null;
+}
+
 function clearToken() {
     localStorage.removeItem('accessToken');
     localStorage.removeItem('currentUser');
+    localStorage.removeItem('userRole');
 }
 
 /**

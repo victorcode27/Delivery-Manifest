@@ -121,7 +121,8 @@ def execute_query(db, query: str, params=None):
         if "customer_routes" in query:
             query += (
                 " ON CONFLICT (customer_name) "
-                "DO UPDATE SET route_name = EXCLUDED.route_name"
+                "DO UPDATE SET route_name = EXCLUDED.route_name, "
+                "delivery_mode = EXCLUDED.delivery_mode"
             )
 
     # ── ? → :p0, :p1, … ──────────────────────────────────────────────────────
@@ -401,6 +402,9 @@ def _run_migrations(db) -> None:
         # Delivery tracking v1 — link a driver account to a dispatched report
         ("reports", "driver_user_id",
          "ALTER TABLE reports ADD COLUMN driver_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+        # Customer routes v2 — delivery mode flag (INTERNAL | THIRD_PARTY)
+        ("customer_routes", "delivery_mode",
+         "ALTER TABLE customer_routes ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'INTERNAL'"),
     ]
     for table, column, sql in migrations:
         try:

@@ -59,6 +59,7 @@ class DeliveryManifestItem(BaseModel):
     area:            Optional[str]   = None
     value:           Optional[float] = None
     delivery_status: str
+    delivery_mode:   str             = "INTERNAL"
     notes:           Optional[str]   = None
     has_pod:         bool            = False
     has_signature:   bool            = False
@@ -112,3 +113,12 @@ class PodUploadResponse(BaseModel):
     invoice_number: str
     pod_image_path: str
     has_pod:        bool = True
+
+
+# ── Bulk confirm response ──────────────────────────────────────────────────────
+
+class BulkConfirmResponse(BaseModel):
+    """Returned after POST /manifests/{manifest_number}/bulk-confirm."""
+    manifest_number: str
+    updated:         int   # invoices changed to DELIVERED
+    skipped:         int   # invoices already resolved — left untouched

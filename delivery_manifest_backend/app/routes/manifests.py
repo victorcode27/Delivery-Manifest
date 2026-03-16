@@ -567,10 +567,10 @@ def add_customer_route(
     current_user: dict = Depends(require_admin),
 ):
     try:
-        ok = manifest_service.add_customer_route(request.customer_name, request.route_name)
+        ok = manifest_service.add_customer_route(request.customer_name, request.route_name, request.delivery_mode)
         if not ok:
             raise HTTPException(status_code=400, detail="Failed to save mapping")
-        return {"message": f"Assigned '{request.customer_name}' to '{request.route_name}'"}
+        return {"message": f"Assigned '{request.customer_name}' to '{request.route_name}' ({request.delivery_mode})"}
     except HTTPException:
         raise
     except Exception:

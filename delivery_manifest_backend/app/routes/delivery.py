@@ -30,10 +30,11 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from delivery_manifest_backend.app.core.config import settings
-from delivery_manifest_backend.app.core.deps import get_current_user, require_delivery_access, require_delivery_read
+from delivery_manifest_backend.app.core.deps import get_current_user, require_delivery_access, require_delivery_read, require_dispatch_or_admin
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.db.database import get_db
 from delivery_manifest_backend.app.schemas.delivery import (
+    BulkConfirmResponse,
     DeliveryManifestDetailResponse,
     DeliveryManifestItem,
     DeliveryManifestListResponse,
@@ -263,20 +264,22 @@ def get_manifest_detail(
         rows = db.execute(
             text("""
                 SELECT
-                    ri.id                              AS report_item_id,
+                    ri.id                                       AS report_item_id,
                     ri.invoice_number,
                     ri.customer_name,
                     ri.customer_number,
                     ri.area,
                     ri.value,
-                    COALESCE(du.status, 'PENDING')     AS delivery_status,
+                    COALESCE(du.status, 'PENDING')              AS delivery_status,
+                    COALESCE(cr.delivery_mode, 'INTERNAL')      AS delivery_mode,
                     du.notes,
                     du.pod_image_path,
                     du.signature_path,
                     du.updated_at
                 FROM  report_items    ri
-                JOIN  reports          r  ON r.id           = ri.report_id
-                LEFT JOIN delivery_updates du ON du.report_item_id = ri.id
+                JOIN  reports          r  ON r.id              = ri.report_id
+                LEFT JOIN delivery_updates  du ON du.report_item_id = ri.id
+                LEFT JOIN customer_routes   cr ON cr.customer_name  = ri.customer_name
                 WHERE r.manifest_number = :mn
                 ORDER BY ri.id
             """),
@@ -300,6 +303,7 @@ def get_manifest_detail(
             area            = row.area,
             value           = row.value,
             delivery_status = row.delivery_status,
+            delivery_mode   = row.delivery_mode,
             notes           = row.notes,
             has_pod         = bool(row.pod_image_path),
             has_signature   = bool(row.signature_path),
@@ -313,6 +317,149 @@ def get_manifest_detail(
         date_dispatched = header.date_dispatched,
         manifest_status = _derive_manifest_status(statuses),
         items           = items,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/delivery/manifests/{manifest_number}/bulk-confirm
+# ══════════════════════════════════════════════════════════════════════════════
+
+_BULK_UNRESOLVED = frozenset(("PENDING", "IN_TRANSIT"))
+
+
+@router.post("/manifests/{manifest_number}/bulk-confirm", response_model=BulkConfirmResponse)
+def bulk_confirm_manifest(
+    manifest_number: str,
+    db:              Session = Depends(get_db),
+    current_user:    dict    = Depends(require_dispatch_or_admin),
+):
+    """
+    Mark all PENDING and IN_TRANSIT invoices in a manifest as DELIVERED in a
+    single atomic transaction.
+
+    Already-resolved invoices (DELIVERED, FAILED, PARTIAL, RETURNED) are left
+    untouched.  An audit row is written to delivery_events for every invoice
+    that is updated.  Notes and driver linkage already on a row are preserved.
+
+    ADMIN / DISPATCH only — DRIVER role is explicitly excluded via
+    require_dispatch_or_admin.
+
+    Returns
+    -------
+    updated : number of invoices changed to DELIVERED
+    skipped : number of invoices already resolved and left untouched
+    """
+    # Verify manifest exists
+    exists = db.execute(
+        text("SELECT 1 FROM reports WHERE manifest_number = :mn LIMIT 1"),
+        {"mn": manifest_number},
+    ).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Manifest not found")
+
+    # Fetch all report_items for this manifest with their current delivery status
+    all_items = db.execute(
+        text("""
+            SELECT
+                ri.id            AS report_item_id,
+                ri.invoice_number,
+                COALESCE(du.status, 'PENDING') AS current_status
+            FROM  report_items ri
+            JOIN  reports        r  ON r.id = ri.report_id
+            LEFT JOIN delivery_updates du ON du.report_item_id = ri.id
+            WHERE r.manifest_number = :mn
+        """),
+        {"mn": manifest_number},
+    ).fetchall()
+
+    unresolved = [row for row in all_items if row.current_status in _BULK_UNRESOLVED]
+    skipped    = len(all_items) - len(unresolved)
+
+    if not unresolved:
+        logger.info(
+            f"Bulk confirm: manifest={manifest_number} — nothing to update "
+            f"(all {skipped} invoice(s) already resolved) "
+            f"by '{current_user['username']}'"
+        )
+        return BulkConfirmResponse(
+            manifest_number=manifest_number, updated=0, skipped=skipped
+        )
+
+    try:
+        for row in unresolved:
+            # UPSERT delivery_updates — same UPSERT pattern as single-item PUT.
+            # On conflict: set status to DELIVERED, preserve existing notes and
+            # driver linkage (COALESCE keeps existing non-NULL values).
+            db.execute(
+                text("""
+                    INSERT INTO delivery_updates
+                        (report_item_id, invoice_number, manifest_number,
+                         driver_user_id, driver_name, status, notes, updated_at)
+                    VALUES
+                        (:report_item_id, :invoice_number, :manifest_number,
+                         NULL, NULL, 'DELIVERED', NULL, CURRENT_TIMESTAMP)
+                    ON CONFLICT (report_item_id) DO UPDATE SET
+                        status         = 'DELIVERED',
+                        driver_user_id = COALESCE(delivery_updates.driver_user_id, EXCLUDED.driver_user_id),
+                        driver_name    = COALESCE(delivery_updates.driver_name,    EXCLUDED.driver_name),
+                        notes          = COALESCE(delivery_updates.notes,          EXCLUDED.notes),
+                        updated_at     = CURRENT_TIMESTAMP
+                """),
+                {
+                    "report_item_id":  row.report_item_id,
+                    "invoice_number":  row.invoice_number,
+                    "manifest_number": manifest_number,
+                },
+            )
+
+            # Fetch the delivery_updates.id needed for the audit event FK
+            du_id = db.execute(
+                text("SELECT id FROM delivery_updates WHERE report_item_id = :id"),
+                {"id": row.report_item_id},
+            ).scalar()
+
+            # Audit trail — one event row per updated invoice
+            db.execute(
+                text("""
+                    INSERT INTO delivery_events
+                        (delivery_update_id, report_item_id, manifest_number,
+                         invoice_number, status, notes,
+                         changed_by_user_id, changed_by_username, event_at)
+                    VALUES
+                        (:du_id, :report_item_id, :manifest_number,
+                         :invoice_number, 'DELIVERED', NULL,
+                         :user_id, :username, CURRENT_TIMESTAMP)
+                """),
+                {
+                    "du_id":           du_id,
+                    "report_item_id":  row.report_item_id,
+                    "manifest_number": manifest_number,
+                    "invoice_number":  row.invoice_number,
+                    "user_id":         current_user["id"],
+                    "username":        current_user["username"],
+                },
+            )
+
+        db.commit()
+
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.error(
+            f"Error bulk-confirming manifest '{manifest_number}'", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    logger.info(
+        f"Bulk confirm: manifest={manifest_number} updated={len(unresolved)} "
+        f"skipped={skipped} by '{current_user['username']}' "
+        f"(role={current_user.get('role')})"
+    )
+    return BulkConfirmResponse(
+        manifest_number=manifest_number,
+        updated=len(unresolved),
+        skipped=skipped,
     )
 
 

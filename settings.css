@@ -1,0 +1,513 @@
+/* ============================================================
+   settings.css — Styles specific to the Settings page
+   Loaded only by settings.html.
+   Shared base styles (modal, card, btn, form-group, etc.)
+   remain in style.css.
+   ============================================================ */
+
+/* ── Settings page main card ─────────────────────────────── */
+.settings-page-card {
+    background-color: white;
+    border-radius: 0.75rem;
+    box-shadow: var(--shadow-md);
+    padding: 1.5rem;
+}
+
+/* ── Tab content panels ──────────────────────────────────── */
+.settings-tab-content {
+    display: none;
+}
+
+.settings-tab-content.active {
+    display: block;
+}
+
+/* ── Add forms ───────────────────────────────────────────── */
+.settings-add-form {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.settings-add-form input {
+    flex: 1;
+}
+
+.settings-add-form.truck-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+}
+
+.settings-add-form.truck-form input {
+    grid-column: 1 / -1;
+}
+
+.settings-add-form.truck-form button {
+    grid-column: 1 / -1;
+}
+
+/* ── Settings list ───────────────────────────────────────── */
+.settings-list {
+    max-height: 500px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+/* ── Individual list items ───────────────────────────────── */
+.settings-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background-color: var(--bg-color);
+    border-radius: 0.5rem;
+    transition: background-color 0.2s;
+}
+
+.settings-item:hover {
+    background-color: #e2e8f0;
+}
+
+.settings-item-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+}
+
+.settings-item-name {
+    font-weight: 500;
+    color: var(--text-dark);
+}
+
+.settings-item-details {
+    font-size: 0.75rem;
+    color: var(--text-light);
+}
+
+.settings-item-actions {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.settings-item .btn-icon.btn-edit {
+    color: var(--primary-color);
+    padding: 0.25rem;
+}
+
+.settings-item .btn-icon.btn-edit:hover {
+    background-color: #e0f2fe;
+    border-radius: 0.25rem;
+}
+
+.settings-item .btn-icon.btn-delete {
+    color: var(--danger-color);
+    padding: 0.25rem;
+}
+
+.settings-item .btn-icon.btn-delete:hover {
+    background-color: #fee2e2;
+    border-radius: 0.25rem;
+}
+
+.settings-hint {
+    font-size: 0.875rem;
+    color: var(--text-light);
+    font-style: italic;
+}
+
+.settings-empty {
+    text-align: center;
+    padding: 2rem;
+    color: var(--text-light);
+    font-style: italic;
+}
+
+/* ── Inline edit forms ───────────────────────────────────── */
+.settings-edit-form {
+    display: flex;
+    gap: 0.75rem;
+    width: 100%;
+    align-items: center;
+}
+
+.settings-edit-input {
+    flex: 1;
+    padding: 0.5rem;
+    border: 2px solid var(--primary-color);
+    border-radius: 0.375rem;
+    font-size: 0.95rem;
+}
+
+.settings-edit-input:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+}
+
+.settings-edit-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.btn-sm {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8rem;
+}
+
+/* ── Truck edit form ─────────────────────────────────────── */
+.truck-edit-form {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.truck-edit-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+    width: 100%;
+    margin-bottom: 0.75rem;
+}
+
+.truck-edit-grid .form-group {
+    margin-bottom: 0;
+}
+
+.truck-edit-grid .form-group label {
+    font-size: 0.7rem;
+    margin-bottom: 0.25rem;
+}
+
+.truck-edit-grid input,
+.truck-edit-grid select {
+    padding: 0.4rem;
+    font-size: 0.85rem;
+}
+
+/* ── Info text banner ────────────────────────────────────── */
+.settings-info-text {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    background-color: #f0f9ff;
+    border: 1px solid #bae6fd;
+    border-radius: 0.5rem;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+    color: #0369a1;
+}
+
+.settings-info-text i {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+}
+
+/* ── Customer routes form ────────────────────────────────── */
+.customer-route-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 0.5rem;
+}
+
+@media (max-width: 600px) {
+    .customer-route-form {
+        grid-template-columns: 1fr;
+    }
+}
+
+.settings-item .route-badge {
+    background-color: #e0f2fe;
+    color: #0369a1;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+/* ── Customer route groups ───────────────────────────────── */
+.settings-item-group {
+    margin-bottom: 1.5rem;
+}
+
+.settings-item-group-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background-color: #e0f2fe;
+    border-radius: 0.375rem;
+    margin-bottom: 0.5rem;
+}
+
+.settings-item-group-header .route-badge {
+    background-color: #0369a1;
+    color: white;
+    padding: 0.25rem 0.75rem;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+}
+
+.settings-item-group-header .customer-count {
+    font-size: 0.75rem;
+    color: #64748b;
+}
+
+.customer-route-edit {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    width: 100%;
+}
+
+.customer-route-edit .settings-edit-input {
+    flex: 2;
+    min-width: 150px;
+}
+
+.customer-route-edit select {
+    flex: 1;
+    min-width: 120px;
+    padding: 0.5rem;
+}
+
+.customer-route-edit .settings-edit-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* ── User management ─────────────────────────────────────── */
+.user-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background-color: var(--bg-color);
+    border-radius: 0.5rem;
+    transition: background-color 0.2s;
+}
+
+.user-card:hover {
+    background-color: #e2e8f0;
+}
+
+.user-card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.user-card-name {
+    font-weight: 600;
+    color: var(--text-dark);
+    font-size: 0.95rem;
+}
+
+.user-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.user-card-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.role-badge {
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.role-badge.full-access {
+    background-color: #dcfce7;
+    color: #166534;
+}
+
+.role-badge.dispatch {
+    background-color: #e0f2fe;
+    color: #0369a1;
+}
+
+.role-badge.reports-only {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.status-badge {
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
+.status-badge.active {
+    background-color: #dcfce7;
+    color: #166534;
+}
+
+.status-badge.inactive {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+.self-badge {
+    background-color: #e0f2fe;
+    color: #0369a1;
+    padding: 0.2rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.65rem;
+    font-weight: 600;
+}
+
+.user-add-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    padding-bottom: 1rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.user-add-form .form-group-full {
+    grid-column: 1 / -1;
+}
+
+/* ── Password strength indicator ─────────────────────────── */
+.password-strength {
+    display: flex;
+    gap: 0.25rem;
+    margin-top: 0.25rem;
+}
+
+.password-strength .bar {
+    flex: 1;
+    height: 3px;
+    background-color: var(--border-color);
+    border-radius: 2px;
+    transition: background-color 0.3s;
+}
+
+.password-strength .bar.weak   { background-color: #dc2626; }
+.password-strength .bar.medium { background-color: #f59e0b; }
+.password-strength .bar.strong { background-color: #059669; }
+
+.password-hint {
+    font-size: 0.7rem;
+    color: var(--text-light);
+    margin-top: 0.2rem;
+}
+
+.password-hint.error {
+    color: var(--danger-color);
+}
+
+/* ── Password reset sub-modal ────────────────────────────── */
+.sub-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.4);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1100;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s;
+}
+
+.sub-modal-overlay.visible {
+    opacity: 1;
+    visibility: visible;
+}
+
+.sub-modal {
+    background-color: white;
+    border-radius: 0.75rem;
+    width: 90%;
+    max-width: 420px;
+    padding: 1.5rem;
+    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1);
+}
+
+.sub-modal h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.sub-modal .form-group {
+    margin-bottom: 0.75rem;
+}
+
+.sub-modal .btn-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+/* ── Toggle switch ───────────────────────────────────────── */
+.toggle-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    cursor: pointer;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #cbd5e1;
+    border-radius: 20px;
+    transition: 0.3s;
+}
+
+.toggle-slider:before {
+    content: "";
+    position: absolute;
+    height: 16px;
+    width: 16px;
+    left: 2px;
+    bottom: 2px;
+    background-color: white;
+    border-radius: 50%;
+    transition: 0.3s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background-color: var(--success-color);
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(16px);
+}
