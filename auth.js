@@ -48,7 +48,7 @@ function clearToken() {
 function requireAuth() {
     const token = getToken();
     const user = localStorage.getItem('currentUser');
-    if (!token && !user) {
+    if (!token || !user) {
         window.location.href = 'index.html';
     }
 }

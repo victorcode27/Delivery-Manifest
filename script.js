@@ -197,8 +197,8 @@ const orderCountEl = document.getElementById('order-count');
 // Initialization
 document.addEventListener('DOMContentLoaded', async () => {
     // WAIT for settings to load first (defensive against API failures)
-    // Only fetch from server if a token exists — avoids 401 alert on unauthenticated page load
-    if (getToken() || localStorage.getItem('currentUser')) {
+    // Only fetch from server if a valid session exists — avoids 401 alert on unauthenticated page load
+    if (getToken() && localStorage.getItem('currentUser')) {
         try {
             await loadSettings();
         } catch (e) {
@@ -221,9 +221,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         handleTruckChange();
     }
 
-    // Initial Landing Page — skip if session already exists in localStorage
+    // Initial Landing Page — skip if a full session exists (token + username both required)
     initUsers();
-    if (getToken() || localStorage.getItem('currentUser')) {
+    if (getToken() && localStorage.getItem('currentUser')) {
         restoreSessionUI();
     } else {
         showLandingPage();
@@ -248,7 +248,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 window.addEventListener('pageshow', (event) => {
     if (!event.persisted) return; // Normal load — DOMContentLoaded already handled it.
 
-    if (getToken() || localStorage.getItem('currentUser')) {
+    if (getToken() && localStorage.getItem('currentUser')) {
         // Session is still alive after navigating back — restore the dashboard.
         restoreSessionUI();
     } else {
@@ -643,14 +643,14 @@ function initSecondaryListeners() {
     // If already authenticated, bypass login modal and restore straight into the app.
     // If not authenticated, open the login modal as before.
     document.getElementById('landing-manifest-btn').addEventListener('click', () => {
-        if (getToken() || localStorage.getItem('currentUser')) {
+        if (getToken() && localStorage.getItem('currentUser')) {
             restoreSessionUI('manifest');
         } else {
             openLoginModal('manifest');
         }
     });
     document.getElementById('landing-report-btn').addEventListener('click', () => {
-        if (getToken() || localStorage.getItem('currentUser')) {
+        if (getToken() && localStorage.getItem('currentUser')) {
             restoreSessionUI('report');
         } else {
             openLoginModal('report');
@@ -876,8 +876,8 @@ async function loadCurrentManifestFromAPI() {
     // CLEAR FIRST - prevent showing stale data if API fails
     orders = [];
 
-    // Skip API call if unauthenticated — avoids 401 alert on page load before login
-    if (!getToken() && !localStorage.getItem('currentUser')) {
+    // Skip API call if unauthenticated — both token and username must be present
+    if (!getToken() || !localStorage.getItem('currentUser')) {
         return;
     }
 
