@@ -841,6 +841,13 @@ input.auto-generated:focus {
 }
 
 
+/* ── Auth-pending: hide app shell until JS resolves session state ────────── */
+/* Prevents dashboard HTML from flashing before DOMContentLoaded decides     */
+/* whether to show the landing overlay or restore the authenticated UI.       */
+body.auth-pending .app-container {
+    visibility: hidden;
+}
+
 /* Landing Page Styles */
 .landing-overlay {
     position: fixed;

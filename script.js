@@ -228,6 +228,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         showLandingPage();
     }
 
+    // Auth decision is resolved — reveal the app shell (was hidden during
+    // auth-pending to prevent dashboard HTML from flashing before JS runs).
+    document.body.classList.remove('auth-pending');
+
     // Initialize DEV_MODE if available
     if (window.DevMode) {
         window.DevMode.init();
