@@ -196,36 +196,35 @@ const orderCountEl = document.getElementById('order-count');
 
 // Initialization
 document.addEventListener('DOMContentLoaded', async () => {
-    // WAIT for settings to load first (defensive against API failures)
-    // Only fetch from server if a valid session exists — avoids 401 alert on unauthenticated page load
+    // Non-API setup — safe to run regardless of auth state
+    setDefaultDate();
+    setupEventListeners();
+    initUsers();
+
+    // Compute auth state once.  Both token AND stored username must be present —
+    // a stale username or expired-token string alone is not a valid session.
     if (getToken() && localStorage.getItem('currentUser')) {
+        // ── Branch A: authenticated ────────────────────────────────────────
+        // All protected dashboard API calls happen here and nowhere else on
+        // startup.  No protected calls run in the unauthenticated branch.
         try {
             await loadSettings();
         } catch (e) {
             console.warn("Settings failed to load, continuing with empty defaults");
             logError("Settings failed, continuing with empty defaults");
         }
-    }
-
-    // Now initialize UI with loaded (or empty) settings
-    await loadState();
-    setDefaultDate();
-    initManifestNumber(); // Auto-generate manifest number if not set
-    initTruckDropdown(); // Initialize truck list - now has settings data
-    initPersonnelDropdowns(); // Initialize driver, assistant, checker dropdowns - now has settings data
-    renderTable();
-    setupEventListeners();
-
-    // Explicitly call handleTruckChange if there's a saved truck value to populate names
-    if (formInputs.regNumber.value) {
-        handleTruckChange();
-    }
-
-    // Initial Landing Page — skip if a full session exists (token + username both required)
-    initUsers();
-    if (getToken() && localStorage.getItem('currentUser')) {
+        await loadState();
+        initManifestNumber();
+        initTruckDropdown();
+        initPersonnelDropdowns();
+        await renderTable();
+        if (formInputs.regNumber.value) {
+            handleTruckChange();
+        }
         restoreSessionUI();
     } else {
+        // ── Branch B: unauthenticated ──────────────────────────────────────
+        // Show login.  No dashboard API calls are made.
         showLandingPage();
     }
 
@@ -862,9 +861,8 @@ async function loadState() {
         }
     }
 
-    // Load current manifest from API (replaces localStorage orders)
-    await loadCurrentManifestFromAPI();
-
+    // Manifest items are loaded separately via renderTable().  Callers that
+    // need fresh API data must call renderTable() after loadState().
     const savedReports = localStorage.getItem('manifestReports');
     if (savedReports) {
         reports = JSON.parse(savedReports);
@@ -2540,11 +2538,18 @@ async function finalizeLogin(user) {
     setUserRole(user.role);
 
 
-    // Explicitly re-initialize the main form data
-    // This handles cases where page loaded before server was ready
+    // Run the full authenticated dashboard init (skipped at startup because
+    // the user was unauthenticated when DOMContentLoaded fired).
     await loadSettings();
+    initTruckDropdown();
+    initPersonnelDropdowns();
+    await loadState();
     initManifestNumber();
     setDefaultDate();
+    renderTable();
+    if (formInputs.regNumber.value) {
+        handleTruckChange();
+    }
 
     // If manifest number is STILL missing, force a reset/generate
     if (!formInputs.manifestNumber.value) {
