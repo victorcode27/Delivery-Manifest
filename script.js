@@ -235,6 +235,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 });
 
+/**
+ * pageshow fires on every page display, including bfcache restores.
+ * When event.persisted is true the browser returned this page from its
+ * back-forward cache: DOMContentLoaded did NOT re-fire, so we must
+ * re-check auth state here to keep the landing overlay in sync.
+ *
+ * We only toggle the overlay and reset permissions — we deliberately
+ * do NOT re-run loadSettings() / renderTable() to avoid unnecessary
+ * API calls and UI flicker on a bfcache hit.
+ */
+window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return; // Normal load — DOMContentLoaded already handled it.
+
+    if (getToken() || localStorage.getItem('currentUser')) {
+        // Session is still alive after navigating back — restore the dashboard.
+        restoreSessionUI();
+    } else {
+        // Session was cleared (e.g. 401 on another page) — show login.
+        showLandingPage();
+    }
+});
+
 // User Management Initialization
 function initUsers() {
     // Users are now managed by the backend database

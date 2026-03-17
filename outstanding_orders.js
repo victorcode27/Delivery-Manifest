@@ -75,7 +75,7 @@ function setupEventListeners() {
     });
 
     // Navigation
-    elements.backBtn.addEventListener('click', () => window.history.back());
+    elements.backBtn.addEventListener('click', () => window.location.href = 'index.html');
     elements.dispatchReportBtn.addEventListener('click', () => window.location.href = 'dispatch_report.html');
     elements.refreshBtn.addEventListener('click', loadData);
 

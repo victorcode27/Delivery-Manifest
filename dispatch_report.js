@@ -157,7 +157,7 @@ function setupEventListeners() {
     });
 
     // Navigation
-    elements.backBtn.addEventListener('click', () => window.history.back());
+    elements.backBtn.addEventListener('click', () => window.location.href = 'index.html');
     elements.outstandingBtn.addEventListener('click', () => window.location.href = 'outstanding_orders.html');
 
     // Retry button
