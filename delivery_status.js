@@ -170,6 +170,23 @@ function renderManifests(manifests) {
 
 // ── Detail modal ───────────────────────────────────────────────────────────
 
+// Returns <option> elements for every valid invoice status, pre-selecting currentStatus.
+function renderActionOptions(currentStatus) {
+    const statuses = ['PENDING', 'IN_TRANSIT', 'DELIVERED', 'FAILED', 'RETURNED', 'CANCELLED'];
+    const labels   = {
+        'PENDING':   'Pending',
+        'IN_TRANSIT':'In Transit',
+        'DELIVERED': 'Delivered',
+        'FAILED':    'Failed',
+        'RETURNED':  'Returned',
+        'CANCELLED': 'Cancelled',
+    };
+    return statuses.map(s =>
+        `<option value="${s}"${s === currentStatus ? ' selected' : ''}>${labels[s]}</option>`
+    ).join('');
+}
+
+
 async function openDetail(manifestNumber) {
     const modal = document.getElementById('ds-detail-modal');
     const body  = document.getElementById('ds-modal-body');
@@ -208,15 +225,20 @@ function renderDetailModal(manifest) {
         ? items.map(item => {
             const status = item.delivery_status || 'PENDING';
             const actionCell = canConfirm
-                ? (DS_ACTIONABLE_STATUSES.includes(status)
-                    ? `<button class="ds-mark-delivered-btn report-btn report-btn-primary"
+                ? `<div style="display:flex;gap:6px;align-items:center;">
+                       <select class="ds-status-select"
+                               data-item-id="${item.report_item_id}"
+                               style="font-size:0.75rem;padding:2px 4px;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;">
+                           ${renderActionOptions(status)}
+                       </select>
+                       <button class="apply-invoice-action report-btn report-btn-primary"
                                data-item-id="${item.report_item_id}"
                                data-invoice="${dsEsc(item.invoice_number)}"
                                data-manifest="${dsEsc(manifest.manifest_number)}"
                                style="font-size:0.75rem;padding:3px 10px;white-space:nowrap;">
-                           <i data-lucide="check-circle"></i> Mark Delivered
-                       </button>`
-                    : '—')
+                           Apply
+                       </button>
+                   </div>`
                 : '';
             const modeBadge = item.delivery_mode === 'THIRD_PARTY'
                 ? ` <span style="font-size:0.68rem;font-weight:600;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:3px;padding:1px 5px;vertical-align:middle;" title="Third Party delivery">3P</span>`
@@ -297,45 +319,37 @@ async function viewPodFile(path) {
     }
 }
 
-async function markDelivered(reportItemId, invoiceNumber, manifestNumber) {
-    if (!confirm(`Mark invoice ${invoiceNumber} as Delivered?`)) return;
+async function applyInvoiceAction(reportItemId, invoiceNumber, manifestNumber, newStatus) {
+    if (!confirm(`Set invoice ${invoiceNumber} to ${newStatus}?`)) return;
 
-    // Disable the button immediately to prevent duplicate submissions
-    const btn = document.querySelector(`.ds-mark-delivered-btn[data-item-id="${reportItemId}"]`);
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = 'Saving…';
-    }
+    const applyBtn = document.querySelector(`.apply-invoice-action[data-item-id="${reportItemId}"]`);
+    const select   = document.querySelector(`.ds-status-select[data-item-id="${reportItemId}"]`);
+
+    // Disable controls immediately to prevent duplicate submissions
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Saving…'; }
+    if (select)   { select.disabled = true; }
 
     try {
         const res = await apiFetch(`${DS_API}/updates/${reportItemId}`, {
             method: 'PUT',
-            body: JSON.stringify({ status: 'DELIVERED' }),
+            body: JSON.stringify({ status: newStatus }),
         });
 
         if (res.ok) {
-            // Re-fetch the detail view so the row reflects the new status
+            // Re-fetch detail and list so all counts/badges update
             openDetail(manifestNumber);
-            // Refresh the manifest list so summary counts update
             loadManifests();
         } else {
             const err = await res.json().catch(() => ({}));
             alert(err.detail || 'Failed to update delivery status.');
-            // Re-enable the button on failure so the user can retry
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = '<i data-lucide="check-circle"></i> Mark Delivered';
-                lucide.createIcons();
-            }
+            if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply'; }
+            if (select)   { select.disabled = false; }
         }
     } catch (e) {
-        console.error('[DeliveryStatus] markDelivered error:', e);
+        console.error('[DeliveryStatus] applyInvoiceAction error:', e);
         alert('Server error updating delivery status.');
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '<i data-lucide="check-circle"></i> Mark Delivered';
-            lucide.createIcons();
-        }
+        if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply'; }
+        if (select)   { select.disabled = false; }
     }
 }
 
@@ -455,13 +469,17 @@ function dsInit() {
         const podBtn = e.target.closest('.ds-pod-btn');
         if (podBtn) viewPodFile(podBtn.dataset.podPath);
 
-        const confirmBtn = e.target.closest('.ds-mark-delivered-btn');
-        if (confirmBtn) {
-            markDelivered(
-                parseInt(confirmBtn.dataset.itemId, 10),
-                confirmBtn.dataset.invoice,
-                confirmBtn.dataset.manifest,
-            );
+        const applyBtn = e.target.closest('.apply-invoice-action');
+        if (applyBtn) {
+            const sel = document.querySelector(`.ds-status-select[data-item-id="${applyBtn.dataset.itemId}"]`);
+            if (sel) {
+                applyInvoiceAction(
+                    parseInt(applyBtn.dataset.itemId, 10),
+                    applyBtn.dataset.invoice,
+                    applyBtn.dataset.manifest,
+                    sel.value,
+                );
+            }
         }
 
         const bulkBtn = e.target.closest('.ds-bulk-confirm-btn');
