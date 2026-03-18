@@ -172,14 +172,14 @@ function renderManifests(manifests) {
 
 // Returns <option> elements for every valid invoice status, pre-selecting currentStatus.
 function renderActionOptions(currentStatus) {
-    const statuses = ['PENDING', 'IN_TRANSIT', 'DELIVERED', 'FAILED', 'RETURNED', 'CANCELLED'];
+    const statuses = ['PENDING', 'IN_TRANSIT', 'DELIVERED', 'FAILED', 'RETURNED', 'PARTIAL'];
     const labels   = {
         'PENDING':   'Pending',
         'IN_TRANSIT':'In Transit',
         'DELIVERED': 'Delivered',
         'FAILED':    'Failed',
         'RETURNED':  'Returned',
-        'CANCELLED': 'Cancelled',
+        'PARTIAL':   'Partial',
     };
     return statuses.map(s =>
         `<option value="${s}"${s === currentStatus ? ' selected' : ''}>${labels[s]}</option>`
