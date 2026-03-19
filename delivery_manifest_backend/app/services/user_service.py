@@ -9,7 +9,7 @@ All functions receive a SQLAlchemy ``Session`` from the route layer (via
 Security rules enforced:
   • Password strength validated before hashing
   • Self-lockout prevention (cannot change own role / status)
-  • Role values constrained to ADMIN | DISPATCH | REPORTS_ONLY
+  • Role values constrained to ADMIN | DISPATCH | REPORTS_ONLY | DRIVER
 """
 
 from typing import Dict, List, Optional
@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.core.security import (
+    VALID_ROLES,
     hash_password,
     validate_password_strength,
     verify_password,
@@ -28,8 +29,7 @@ from delivery_manifest_backend.app.models.user import User
 
 logger = get_logger(__name__)
 
-VALID_ROLES = ("ADMIN", "DISPATCH", "REPORTS_ONLY", "DRIVER")
-
+# VALID_ROLES is the canonical tuple defined in app.core.security — imported above.
 
 # ── Read ──────────────────────────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ def create_user(
     db: Session,
     username: str,
     password: str,
-    role: str = "ADMIN",
+    role: str = "REPORTS_ONLY",
     is_active: bool = True,
 ) -> User:
     """

@@ -9,6 +9,8 @@ from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel, validator
 
+from delivery_manifest_backend.app.core.constants import DELIVERY_MODES
+
 
 # ── Uploaded manifest files ────────────────────────────────────────────────────
 
@@ -87,7 +89,7 @@ class ReportInvoiceItem(BaseModel):
 
 class ReportRequest(BaseModel):
     """Full payload to save a dispatch report."""
-    manifestNumber: str
+    manifestNumber: Optional[str] = None  # Ignored — backend generates manifest numbers
     date:           str
     driver:         Optional[str]   = None
     assistant:      Optional[str]   = None
@@ -97,6 +99,7 @@ class ReportRequest(BaseModel):
     palletsBlue:    int             = 0
     crates:         int             = 0
     mileage:        int             = 0
+    # Ignored — backend recomputes these from report_items rows in save_report()
     totalValue:     float           = 0
     totalSku:       int             = 0
     totalWeight:    float           = 0
@@ -134,8 +137,8 @@ class CustomerRouteRequest(BaseModel):
 
     @validator("delivery_mode")
     def _valid_mode(cls, v: str) -> str:
-        if v not in ("INTERNAL", "THIRD_PARTY"):
-            raise ValueError("delivery_mode must be INTERNAL or THIRD_PARTY")
+        if v not in DELIVERY_MODES:
+            raise ValueError(f"delivery_mode must be one of: {', '.join(DELIVERY_MODES)}")
         return v
 
 

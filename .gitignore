@@ -21,3 +21,13 @@ backfill_*.py
 migrate_helper.py
 get_lan_ip.py
 diagnose_staging_bug.py
+
+# One-time credential-containing utility scripts — never commit
+generate_hash.py
+generate_hash_bcrypt.py
+
+# Database backup files
+*.db.bak-*
+
+# Claude Code session memory
+.claude/

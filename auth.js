@@ -5,7 +5,7 @@
  * Provides:
  *   getToken()           — read JWT from localStorage
  *   setToken(token)      — persist JWT to localStorage
- *   setCurrentUser(name) — persist username to localStorage (X-Username fallback)
+ *   setCurrentUser(name) — persist username to localStorage
  *   clearToken()         — remove JWT + username from localStorage
  *   requireAuth()        — redirect to index.html if not authenticated
  *   apiFetch(url, opts)  — fetch wrapper that attaches auth headers and handles 401/403
@@ -39,11 +39,11 @@ function clearToken() {
     localStorage.removeItem('accessToken');
     localStorage.removeItem('currentUser');
     localStorage.removeItem('userRole');
+    localStorage.removeItem('manifestAppState');
 }
 
 /**
- * Redirect to index.html if neither a JWT nor a stored username exists.
- * Supports both production (JWT) and local dev (X-Username) modes.
+ * Redirect to index.html if not authenticated (no JWT or no stored username).
  */
 function requireAuth() {
     const token = getToken();
@@ -56,14 +56,12 @@ function requireAuth() {
 /**
  * Authenticated fetch wrapper.
  * - Attaches Authorization: Bearer <token> when JWT is present.
- * - Falls back to X-Username header when only a stored username exists (local dev).
  * - Strips Content-Type for FormData so the browser sets the multipart boundary.
  * - On 401: alerts the user, clears the session, and redirects to index.html.
  * - On 403: alerts the user and returns the response (no redirect).
  */
 async function apiFetch(url, options = {}) {
     const token = getToken();
-    const storedUser = localStorage.getItem('currentUser');
     const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
 
     // FormData: let the browser set Content-Type (includes multipart boundary)
@@ -73,8 +71,6 @@ async function apiFetch(url, options = {}) {
 
     if (token) {
         headers['Authorization'] = `Bearer ${token}`;
-    } else if (storedUser) {
-        headers['X-Username'] = storedUser;
     }
 
     const response = await fetch(url, { ...options, headers });

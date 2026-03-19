@@ -7,7 +7,8 @@ Column notes
 ------------
 - ``hashed_password``  maps to the DB column ``password_hash`` (legacy name kept
   so existing rows are not broken; SQLAlchemy ``key=`` handles the rename).
-- ``role``             'ADMIN' | 'DISPATCH' | 'REPORTS_ONLY'
+- ``role``             'ADMIN' | 'DISPATCH' | 'REPORTS_ONLY' | 'DRIVER'
+                       Default is REPORTS_ONLY (least-privileged role).
 - ``is_active``        account enabled / disabled
 - ``created_at``       TIMESTAMPTZ, set on insert
 - ``updated_at``       TIMESTAMPTZ, set on insert and update
@@ -33,7 +34,7 @@ class User(Base):
     # DB column is still called ``password_hash``; Python attribute is ``hashed_password``
     hashed_password = Column("password_hash", Text, nullable=False)
 
-    role            = Column(Text, nullable=False, default="ADMIN")
+    role            = Column(Text, nullable=False, default="REPORTS_ONLY")
     is_active       = Column(Boolean, default=True)
     created_at      = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at      = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())

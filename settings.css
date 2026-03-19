@@ -346,6 +346,11 @@
     color: #92400e;
 }
 
+.role-badge.driver {
+    background-color: #f3e8ff;
+    color: #6b21a8;
+}
+
 .status-badge {
     padding: 0.2rem 0.6rem;
     border-radius: 9999px;

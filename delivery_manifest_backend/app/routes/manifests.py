@@ -16,10 +16,13 @@ All manifest-domain endpoints:
 Auth policy
 -----------
   Public:
-    GET /health, /watcher/status
+    GET /health
 
   Any authenticated user (get_current_user):
-    GET /invoices, /areas, /customers, /invoices/search,
+    GET /areas, /customers, /watcher/status
+
+  Office staff only — DRIVER blocked (require_office_read):
+    GET /invoices, /invoices/search,
         /manifests/search/query, /manifests/{n}, /reports, /reports/dispatched,
         /reports/outstanding, /settings/{cat}, /trucks, /customer-routes
 
@@ -158,11 +161,31 @@ def allocate_invoices(
     """Stage invoices for a manifest (does not finalise until report is saved)."""
     try:
         username = current_user["username"]
-        added = manifest_service.add_to_staging(username, request_data.filenames)
+        result   = manifest_service.add_to_staging(username, request_data.filenames)
+        added    = result["added"]
+        taken    = result["taken"]
+
+        msg_parts = []
+        if added:
+            msg_parts.append(f"Added {added} invoice(s)")
+        if taken:
+            msg_parts.append(f"{taken} already claimed by another session")
+        if result["already_yours"]:
+            msg_parts.append(f"{result['already_yours']} already in your manifest")
+        if result["not_found"]:
+            msg_parts.append(f"{result['not_found']} not found")
+        message = "; ".join(msg_parts) if msg_parts else "No invoices processed"
+
         if added > 0:
-            logger.info(f"Staged {added} invoices for '{username}'")
-            return {"message": f"Added {added} invoices to manifest", "added": added}
-        return {"message": "Invoices already in manifest or not found", "added": 0}
+            logger.info(f"Staged {added} invoices for '{username}' (taken={taken})")
+
+        return {
+            "message":      message,
+            "added":        added,
+            "taken":        taken,
+            "already_yours": result["already_yours"],
+            "not_found":    result["not_found"],
+        }
     except Exception:
         logger.error("Error staging invoices", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -184,7 +207,7 @@ def add_manual_invoice(
     req: ManualInvoiceRequest,
     current_user: dict = Depends(require_dispatch_or_admin),
 ):
-    """Manually add an invoice that has no PDF source."""
+    """Manually add an invoice that has no PDF source (does not stage it)."""
     try:
         filename = manifest_service.create_manual_invoice(
             customer_name=req.customer_name,
@@ -202,6 +225,44 @@ def add_manual_invoice(
         raise
     except Exception:
         logger.error("Error adding manual invoice", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/invoices/manual-and-stage")
+def add_manual_invoice_and_stage(
+    req: ManualInvoiceRequest,
+    current_user: dict = Depends(require_dispatch_or_admin),
+):
+    """
+    Atomically create a manual invoice and stage it for the caller's manifest.
+
+    Both the invoice INSERT and the staging INSERT occur in a single
+    transaction — there is no window where the invoice exists but is not
+    yet staged, eliminating the partial-failure hole of calling
+    POST /invoices/manual then POST /invoices/allocate separately.
+    """
+    try:
+        username = current_user["username"]
+        filename = manifest_service.create_manual_invoice_and_stage(
+            session_id=username,
+            customer_name=req.customer_name,
+            total_value=req.total_value,
+            invoice_number=req.invoice_number,
+            order_number=req.order_number,
+            customer_number=req.customer_number,
+            area=req.area,
+        )
+        if filename is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to add invoice (duplicate invoice number?)",
+            )
+        logger.info(f"Added and staged manual invoice: {req.invoice_number} for '{username}'")
+        return {"message": "Invoice added and staged successfully", "filename": filename}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.error("Error adding manual invoice and staging", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -326,9 +387,19 @@ def save_report(
     try:
         report_dict               = request_data.dict()
         report_dict["session_id"] = current_user["username"]
-        report_id                 = manifest_service.save_report(report_dict)
-        logger.info(f"Saved report {request_data.manifestNumber} (id={report_id})")
-        return {"message": "Report saved", "id": report_id}
+        # Client-supplied manifestNumber is ignored — backend generates it
+        result                    = manifest_service.save_report(report_dict)
+        logger.info(
+            f"Saved report {result['manifest_number']} (id={result['id']})"
+        )
+        return {
+            "message":         "Report saved",
+            "id":              result["id"],
+            "manifest_number": result["manifest_number"],
+        }
+    except ValueError as exc:
+        logger.warning(f"Report save rejected: {exc}")
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception:
         logger.error("Error saving report", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -423,7 +494,7 @@ def get_outstanding_invoices(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/settings/{category}")
-def get_settings(category: str, current_user: dict = Depends(get_current_user)):
+def get_settings(category: str, current_user: dict = Depends(require_office_read)):
     try:
         return {"category": category, "values": manifest_service.get_settings(category)}
     except Exception:
@@ -488,7 +559,7 @@ def delete_setting(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/trucks")
-def get_trucks(current_user: dict = Depends(get_current_user)):
+def get_trucks(current_user: dict = Depends(require_office_read)):
     try:
         return {"trucks": manifest_service.get_trucks()}
     except Exception:
@@ -553,7 +624,7 @@ def delete_truck(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/customer-routes")
-def get_customer_routes(current_user: dict = Depends(get_current_user)):
+def get_customer_routes(current_user: dict = Depends(require_office_read)):
     try:
         return {"routes": manifest_service.get_customer_routes()}
     except Exception:
@@ -600,7 +671,10 @@ def delete_customer_route(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/watcher/status")
-def get_watcher_status(request: Request):
+def get_watcher_status(
+    request:      Request,
+    current_user: dict = Depends(get_current_user),
+):
     """Check whether the file watcher background service is running."""
     # The watcher instance is stored on the FastAPI app state by main.py
     watcher = getattr(request.app.state, "watcher_service", None)

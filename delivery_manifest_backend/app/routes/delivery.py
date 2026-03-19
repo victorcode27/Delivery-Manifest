@@ -30,10 +30,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from delivery_manifest_backend.app.core.config import settings
+from delivery_manifest_backend.app.core.constants import DELIVERY_EVENT_POD_UPLOAD, DELIVERY_EVENT_STATUS_CHANGE
 from delivery_manifest_backend.app.core.deps import get_current_user, require_delivery_access, require_delivery_read, require_dispatch_or_admin
 from delivery_manifest_backend.app.core.logger import get_logger
-from delivery_manifest_backend.app.db.database import get_db
+from delivery_manifest_backend.app.db.database import _is_sqlite, get_db
 from delivery_manifest_backend.app.schemas.delivery import (
+    ALLOWED_TRANSITIONS,
     BulkConfirmResponse,
     DeliveryManifestDetailResponse,
     DeliveryManifestItem,
@@ -66,6 +68,23 @@ def _detect_file_type(header: bytes):
 
 router = APIRouter(prefix="/delivery", tags=["delivery"])
 logger = get_logger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /api/delivery/meta
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/meta")
+def get_delivery_meta(current_user: dict = Depends(get_current_user)):
+    """
+    Return backend delivery constants for client consumption.
+
+    Exposes ALLOWED_TRANSITIONS so the frontend does not need to maintain
+    a local copy.  Clients should call this once on init and cache locally.
+    """
+    return {
+        "allowed_transitions": {k: sorted(v) for k, v in ALLOWED_TRANSITIONS.items()},
+    }
 
 
 # ── Private helpers ────────────────────────────────────────────────────────────
@@ -109,6 +128,30 @@ def _is_manifest_assigned_to_driver(
         {"mn": manifest_number, "uid": user["id"], "uname": user["username"]},
     )
     return result.fetchone() is not None
+
+
+def _validate_transition(current_status: str, next_status: str) -> None:
+    """
+    Raise HTTP 422 if current_status -> next_status is not permitted by the
+    canonical ALLOWED_TRANSITIONS map defined in schemas.delivery.
+
+    Called before every status UPSERT to enforce the backend state machine.
+    The frontend may mirror these rules for UX, but this check is authoritative.
+    """
+    allowed = ALLOWED_TRANSITIONS.get(current_status, frozenset())
+    if next_status not in allowed:
+        if not allowed:
+            detail = (
+                f"Cannot update delivery status: '{current_status}' is a terminal "
+                f"status and accepts no further transitions."
+            )
+        else:
+            detail = (
+                f"Invalid delivery status transition: '{current_status}' -> '{next_status}'. "
+                f"Allowed next statuses from '{current_status}': "
+                f"{', '.join(sorted(allowed))}."
+            )
+        raise HTTPException(status_code=422, detail=detail)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -324,7 +367,12 @@ def get_manifest_detail(
 # POST /api/delivery/manifests/{manifest_number}/bulk-confirm
 # ══════════════════════════════════════════════════════════════════════════════
 
-_BULK_UNRESOLVED = frozenset(("PENDING", "IN_TRANSIT"))
+# Statuses from which a transition to DELIVERED is valid under the canonical state machine.
+# Derived from ALLOWED_TRANSITIONS so this stays in sync automatically.
+# Under current rules this resolves to: frozenset({"IN_TRANSIT"})
+_BULK_CONFIRMABLE = frozenset(
+    s for s, allowed in ALLOWED_TRANSITIONS.items() if "DELIVERED" in allowed
+)
 
 
 @router.post("/manifests/{manifest_number}/bulk-confirm", response_model=BulkConfirmResponse)
@@ -372,7 +420,7 @@ def bulk_confirm_manifest(
         {"mn": manifest_number},
     ).fetchall()
 
-    unresolved = [row for row in all_items if row.current_status in _BULK_UNRESOLVED]
+    unresolved = [row for row in all_items if row.current_status in _BULK_CONFIRMABLE]
     skipped    = len(all_items) - len(unresolved)
 
     if not unresolved:
@@ -404,6 +452,7 @@ def bulk_confirm_manifest(
                         driver_name    = COALESCE(delivery_updates.driver_name,    EXCLUDED.driver_name),
                         notes          = COALESCE(delivery_updates.notes,          EXCLUDED.notes),
                         updated_at     = CURRENT_TIMESTAMP
+                    WHERE delivery_updates.status = 'IN_TRANSIT'
                 """),
                 {
                     "report_item_id":  row.report_item_id,
@@ -423,18 +472,20 @@ def bulk_confirm_manifest(
                 text("""
                     INSERT INTO delivery_events
                         (delivery_update_id, report_item_id, manifest_number,
-                         invoice_number, status, notes,
-                         changed_by_user_id, changed_by_username, event_at)
+                         invoice_number, status, previous_status, notes,
+                         event_type, changed_by_user_id, changed_by_username, event_at)
                     VALUES
                         (:du_id, :report_item_id, :manifest_number,
-                         :invoice_number, 'DELIVERED', NULL,
-                         :user_id, :username, CURRENT_TIMESTAMP)
+                         :invoice_number, 'DELIVERED', :previous_status, NULL,
+                         :event_type, :user_id, :username, CURRENT_TIMESTAMP)
                 """),
                 {
                     "du_id":           du_id,
                     "report_item_id":  row.report_item_id,
                     "manifest_number": manifest_number,
                     "invoice_number":  row.invoice_number,
+                    "previous_status": row.current_status,
+                    "event_type":      DELIVERY_EVENT_STATUS_CHANGE,
                     "user_id":         current_user["id"],
                     "username":        current_user["username"],
                 },
@@ -526,6 +577,29 @@ def update_delivery_status(
         store_driver_uid  = None
         store_driver_name = None
 
+    # Read current delivery status before the UPSERT so we can (a) validate the
+    # transition and (b) record previous_status in the audit event.
+    # Default to PENDING when no delivery_updates row exists yet.
+    #
+    # PostgreSQL: SELECT FOR UPDATE acquires a row-level lock within the current
+    # transaction, blocking any concurrent request from reading or writing the same
+    # row until this transaction commits.  This serialises concurrent transitions
+    # for the same invoice — the second request will re-read the post-commit state
+    # and either validate cleanly or receive HTTP 422 if the state is now terminal.
+    #
+    # SQLite: plain SELECT — SQLite serialises all writes at the file level, which
+    # provides practical safety in the single-process dev environment.  SELECT FOR
+    # UPDATE is not supported and not needed for SQLite's concurrency model.
+    _lock_suffix = "" if _is_sqlite else " FOR UPDATE"
+    existing_du = db.execute(
+        text(f"SELECT status FROM delivery_updates WHERE report_item_id = :id{_lock_suffix}"),
+        {"id": report_item_id},
+    ).fetchone()
+    current_status = existing_du.status if existing_du else "PENDING"
+
+    # Enforce canonical state machine — raises HTTP 422 on invalid transition.
+    _validate_transition(current_status, body.status)
+
     try:
         # UPSERT — ON CONFLICT on the UNIQUE constraint of report_item_id.
         # COALESCE logic on conflict:
@@ -568,10 +642,12 @@ def update_delivery_status(
             text("""
                 INSERT INTO delivery_events
                     (delivery_update_id, report_item_id, manifest_number, invoice_number,
-                     status, notes, changed_by_user_id, changed_by_username, event_at)
+                     status, previous_status, notes,
+                     event_type, changed_by_user_id, changed_by_username, event_at)
                 VALUES
                     (:du_id, :report_item_id, :manifest_number, :invoice_number,
-                     :status, :notes, :user_id, :username, CURRENT_TIMESTAMP)
+                     :status, :previous_status, :notes,
+                     :event_type, :user_id, :username, CURRENT_TIMESTAMP)
             """),
             {
                 "du_id":           du_row.id,
@@ -579,7 +655,9 @@ def update_delivery_status(
                 "manifest_number": item_row.manifest_number,
                 "invoice_number":  item_row.invoice_number,
                 "status":          body.status,
+                "previous_status": current_status,
                 "notes":           body.notes,
+                "event_type":      DELIVERY_EVENT_STATUS_CHANGE,
                 "user_id":         current_user["id"],
                 "username":        current_user["username"],
             },
@@ -725,25 +803,28 @@ async def upload_pod(
             {"id": report_item_id},
         ).fetchone()
 
-        # Audit trail
+        # Audit trail — records PoD upload; status is the current state (not a transition)
         db.execute(
             text("""
                 INSERT INTO delivery_events
                     (delivery_update_id, report_item_id, manifest_number, invoice_number,
-                     status, pod_image_path, changed_by_user_id, changed_by_username, event_at)
+                     status, pod_image_path,
+                     event_type, changed_by_user_id, changed_by_username, event_at)
                 VALUES
                     (:du_id, :rid, :mn, :inv,
-                     :status, :pod_path, :user_id, :username, CURRENT_TIMESTAMP)
+                     :status, :pod_path,
+                     :event_type, :user_id, :username, CURRENT_TIMESTAMP)
             """),
             {
                 "du_id":    du_row.id,
                 "rid":      report_item_id,
                 "mn":       item_row.manifest_number,
                 "inv":      item_row.invoice_number,
-                "status":   du_row.status,
-                "pod_path": rel_path,
-                "user_id":  current_user["id"],
-                "username": current_user["username"],
+                "status":     du_row.status,
+                "pod_path":   rel_path,
+                "event_type": DELIVERY_EVENT_POD_UPLOAD,
+                "user_id":    current_user["id"],
+                "username":   current_user["username"],
             },
         )
 
@@ -814,19 +895,41 @@ def serve_pod_file(
     Security:
       - Path traversal is blocked — the resolved absolute path must start
         with UPLOADS_ROOT. Any request that escapes the directory is rejected 400.
+      - DB referential integrity: the path must exist in delivery_updates
+        (pod_image_path or signature_path). Arbitrary on-disk files that are
+        not referenced by any delivery record are rejected 404 for all roles.
       - DRIVER role: may only access files stored under a manifest assigned to them.
         The manifest_number is extracted from the path prefix (pods/{manifest_number}/...).
-      - ADMIN / DISPATCH / REPORTS_ONLY: unrestricted access to all files.
+      - ADMIN / DISPATCH / REPORTS_ONLY: access restricted to DB-backed files only.
 
     file_path : relative path as stored in delivery_updates.pod_image_path
                 e.g. pods/MAN-001/20240315_INV1234_doc.jpg
     """
     role = current_user.get("role")
 
+    # Normalise to forward slashes — DB stores paths with forward slashes.
+    normalised_path = file_path.replace("\\", "/")
+
+    # DB referential integrity check — reject any path not backed by a DB row.
+    # This prevents all roles from fetching arbitrary files that happen to exist
+    # on disk under UPLOADS_ROOT but were never registered as delivery records.
+    path_in_db = db.execute(
+        text("""
+            SELECT 1
+            FROM   delivery_updates
+            WHERE  pod_image_path = :path
+               OR  signature_path = :path
+            LIMIT  1
+        """),
+        {"path": normalised_path},
+    ).fetchone()
+    if not path_in_db:
+        raise HTTPException(status_code=404, detail="File not found")
+
     # DRIVER: enforce manifest ownership before touching the filesystem
     if role == "DRIVER":
         # Expected path shape: pods/{manifest_number}/{filename}
-        parts = file_path.replace("\\", "/").split("/")
+        parts = normalised_path.split("/")
         if len(parts) < 3 or parts[0] != "pods":
             raise HTTPException(status_code=403, detail="Access denied")
         manifest_number = parts[1]

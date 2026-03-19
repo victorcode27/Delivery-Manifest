@@ -11,6 +11,8 @@ All other modules that need a DB session should use:
     from app.db.database import get_db_session   # scripts / background tasks
 """
 
+import os
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -164,6 +166,7 @@ def init_db() -> None:
         db.commit()
         logger.info("Database schema verified.")
         _seed_admin(db)
+        _seed_manifest_counter(db)
     except Exception:
         db.rollback()
         logger.error("Database initialisation failed", exc_info=True)
@@ -204,7 +207,7 @@ def _create_tables(db) -> None:
             id            SERIAL PRIMARY KEY,
             username      TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            role          TEXT NOT NULL DEFAULT 'ADMIN'
+            role          TEXT NOT NULL DEFAULT 'REPORTS_ONLY'
                           CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER')),
             is_active     BOOLEAN DEFAULT TRUE,
             created_at    TIMESTAMPTZ DEFAULT NOW(),
@@ -301,13 +304,22 @@ def _create_tables(db) -> None:
         )
         """,
         # ── manifest_staging ──────────────────────────────────────────────────
+        # UNIQUE(invoice_id) enforces cross-session exclusivity at the DB level:
+        # each invoice can be staged by at most one session at a time.
         """
         CREATE TABLE IF NOT EXISTS manifest_staging (
             id         SERIAL PRIMARY KEY,
             session_id TEXT NOT NULL,
-            invoice_id INTEGER NOT NULL,
+            invoice_id INTEGER NOT NULL UNIQUE,
             added_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (invoice_id) REFERENCES orders(id)
+        )
+        """,
+        # ── manifest_counters ────────────────────────────────────────────────
+        """
+        CREATE TABLE IF NOT EXISTS manifest_counters (
+            prefix      TEXT PRIMARY KEY,
+            last_number INTEGER NOT NULL
         )
         """,
         # ── index on staging ──────────────────────────────────────────────────
@@ -345,10 +357,16 @@ def _create_tables(db) -> None:
             report_item_id      INTEGER NOT NULL,
             manifest_number     TEXT NOT NULL,
             invoice_number      TEXT NOT NULL,
-            status              TEXT NOT NULL,
+            status              TEXT NOT NULL
+                                CHECK (status IN (
+                                    'PENDING','IN_TRANSIT','DELIVERED',
+                                    'FAILED','PARTIAL','RETURNED'
+                                )),
+            previous_status     TEXT,
             notes               TEXT,
             pod_image_path      TEXT,
             signature_path      TEXT,
+            event_type          TEXT NOT NULL DEFAULT 'STATUS_CHANGE',
             changed_by_user_id  INTEGER,
             changed_by_username TEXT,
             event_at            TIMESTAMPTZ DEFAULT NOW(),
@@ -366,6 +384,9 @@ def _create_tables(db) -> None:
 
     # ── Performance indexes ───────────────────────────────────────────────────
     _create_indexes(db, skip_unique_invoice=(has_duplicates or False))
+
+    # ── delivery_events constraints ───────────────────────────────────────────
+    _add_delivery_events_status_check(db)
 
 
 def _column_exists(db, table: str, column: str) -> bool:
@@ -405,6 +426,11 @@ def _run_migrations(db) -> None:
         # Customer routes v2 — delivery mode flag (INTERNAL | THIRD_PARTY)
         ("customer_routes", "delivery_mode",
          "ALTER TABLE customer_routes ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'INTERNAL'"),
+        # delivery_events v2 — audit clarity: distinguish event types and record prior state
+        ("delivery_events", "event_type",
+         "ALTER TABLE delivery_events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'STATUS_CHANGE'"),
+        ("delivery_events", "previous_status",
+         "ALTER TABLE delivery_events ADD COLUMN previous_status TEXT"),
     ]
     for table, column, sql in migrations:
         try:
@@ -421,6 +447,22 @@ def _run_migrations(db) -> None:
     except Exception:
         db.rollback()
 
+    # ── Tighten users.role column default: ADMIN → REPORTS_ONLY ──────────
+    # PostgreSQL only: ALTER TABLE ... ALTER COLUMN ... SET DEFAULT is not
+    # supported by SQLite.  For SQLite the safe default is already embedded
+    # in the CREATE TABLE DDL above (affects new installs only).
+    # Running this unconditionally is safe — SET DEFAULT is idempotent.
+    if not _is_sqlite:
+        try:
+            db.execute(text(
+                "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'REPORTS_ONLY'"
+            ))
+            db.commit()
+            logger.info("Migration: users.role column default set to 'REPORTS_ONLY'.")
+        except Exception as exc:
+            db.rollback()
+            logger.warning(f"Migration warning (users.role default): {exc}")
+
     # ── Role CHECK constraint migration ───────────────────────────────────
     # Order is critical:
     #   1. Drop the old constraint first — otherwise writing 'ADMIN' in step 2
@@ -430,6 +472,35 @@ def _run_migrations(db) -> None:
     _drop_old_role_constraint(db)
     _migrate_user_roles(db)
     _add_new_role_constraint(db)
+
+    # ── Enforce UNIQUE(invoice_id) on manifest_staging ────────────────────
+    # Step 1: Remove any duplicate staging rows (keep the most recent per
+    # invoice_id) so the UNIQUE index creation cannot fail on existing data.
+    # Duplicates should not exist in a healthy DB, but could be present if
+    # the old code ran under concurrent load before this migration.
+    try:
+        db.execute(text("""
+            DELETE FROM manifest_staging
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM manifest_staging GROUP BY invoice_id
+            )
+        """))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning(f"Migration: manifest_staging dedup: {exc}")
+
+    # Step 2: Create the UNIQUE index (idempotent — IF NOT EXISTS).
+    try:
+        db.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_staging_invoice_unique "
+            "ON manifest_staging(invoice_id)"
+        ))
+        db.commit()
+        logger.info("Migration: manifest_staging(invoice_id) UNIQUE index ensured.")
+    except Exception as exc:
+        db.rollback()
+        logger.warning(f"Migration: manifest_staging UNIQUE index: {exc}")
 
     # ── Check for duplicate invoice_numbers (log only — never auto-delete) ──
     # Returns True when duplicates exist → unique index must be deferred.
@@ -475,14 +546,15 @@ def _create_indexes(db, *, skip_unique_invoice: bool = False) -> None:
         ("idx_report_items_invoice_number",
          "CREATE INDEX IF NOT EXISTS idx_report_items_invoice_number ON report_items(invoice_number)"),
         # reports.manifest_number — primary lookup key for manifest details
-        ("idx_reports_manifest_number",
-         "CREATE INDEX IF NOT EXISTS idx_reports_manifest_number ON reports(manifest_number)"),
+        # Also enforced as UNIQUE to match production PostgreSQL constraint
+        ("idx_reports_manifest_number_unique",
+         "CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_manifest_number_unique ON reports(manifest_number)"),
         # reports.date_dispatched — date-range filter + ORDER BY in dispatched view
         ("idx_reports_date_dispatched",
          "CREATE INDEX IF NOT EXISTS idx_reports_date_dispatched ON reports(date_dispatched)"),
-        # manifest_staging.invoice_id — FK + batch existence check in add_to_staging
-        ("idx_staging_invoice_id",
-         "CREATE INDEX IF NOT EXISTS idx_staging_invoice_id ON manifest_staging(invoice_id)"),
+        # manifest_staging.invoice_id — UNIQUE constraint enforces one-session-per-invoice
+        ("idx_staging_invoice_unique",
+         "CREATE UNIQUE INDEX IF NOT EXISTS idx_staging_invoice_unique ON manifest_staging(invoice_id)"),
         # manifest_events.manifest_number — audit log lookup per manifest
         ("idx_events_manifest_number",
          "CREATE INDEX IF NOT EXISTS idx_events_manifest_number ON manifest_events(manifest_number)"),
@@ -526,6 +598,54 @@ def _create_indexes(db, *, skip_unique_invoice: bool = False) -> None:
             ))
         except Exception as exc:
             logger.warning(f"Index creation skipped (idx_orders_unique_invoice_number): {exc}")
+
+
+def _add_delivery_events_status_check(db) -> None:
+    """
+    Add a CHECK constraint to delivery_events.status for valid invoice-level statuses.
+
+    PostgreSQL
+    ----------
+    Checks pg_constraint for an existing constraint on delivery_events that
+    references 'PARTIAL' (a status only present in the target constraint).
+    If not found, adds it via ALTER TABLE ADD CONSTRAINT.  Idempotent.
+
+    SQLite
+    ------
+    Skipped — SQLite does not support adding CHECK constraints via ALTER TABLE.
+    New installs get the constraint from the CREATE TABLE IF NOT EXISTS DDL above.
+    Existing rows are safe: status values are always copied from delivery_updates.status,
+    which is itself constrained by the same CHECK.
+    """
+    if _is_sqlite:
+        logger.info(
+            "[Migration] delivery_events.status CHECK constraint skipped on SQLite "
+            "(new installs get it from DDL; existing rows are application-validated)."
+        )
+        return
+
+    try:
+        existing = db.execute(text("""
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            WHERE t.relname = 'delivery_events'
+              AND c.contype = 'c'
+              AND pg_get_constraintdef(c.oid) LIKE '%PARTIAL%'
+        """)).fetchone()
+        if existing:
+            return  # already applied
+
+        db.execute(text("""
+            ALTER TABLE delivery_events
+            ADD CONSTRAINT delivery_events_status_check
+            CHECK (status IN (
+                'PENDING','IN_TRANSIT','DELIVERED','FAILED','PARTIAL','RETURNED'
+            ))
+        """))
+        logger.info("Added CHECK constraint to delivery_events.status.")
+    except Exception as exc:
+        logger.warning(f"delivery_events status CHECK constraint migration warning: {exc}")
 
 
 def _check_duplicate_invoices(db) -> bool:
@@ -712,7 +832,7 @@ def _migrate_role_constraint_sqlite(db) -> None:
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                role          TEXT NOT NULL DEFAULT 'ADMIN'
+                role          TEXT NOT NULL DEFAULT 'REPORTS_ONLY'
                               CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER')),
                 is_active     BOOLEAN DEFAULT TRUE,
                 created_at    TEXT,
@@ -810,17 +930,99 @@ def _add_new_role_constraint(db) -> None:
 
 
 def _seed_admin(db) -> None:
-    """Create the default admin user if no users exist."""
-    from delivery_manifest_backend.app.core.security import hash_password
+    """
+    Create the initial admin user if the users table is empty.
+
+    Requires the ``ADMIN_SEED_PASSWORD`` environment variable to be set to a
+    password that satisfies the system password policy (min 10 chars, at least
+    one upper, lower, and digit).
+
+    If the variable is absent or too weak the function skips seeding entirely
+    and logs actionable instructions — no insecure default account is ever
+    created.  Once the account exists on a subsequent restart the env var is
+    no longer consulted and can be removed from the environment.
+    """
+    from delivery_manifest_backend.app.core.security import (
+        hash_password,
+        validate_password_strength,
+    )
 
     result = db.execute(text("SELECT COUNT(*) FROM users"))
-    if result.scalar() == 0:
-        db.execute(
-            text(
-                "INSERT INTO users (username, password_hash, role, is_active, is_admin, can_manifest, created_at) "
-                "VALUES (:u, :p, 'ADMIN', TRUE, 1, 1, NOW())"
-            ),
-            {"u": "admin", "p": hash_password("admin")},
+    if result.scalar() != 0:
+        return  # users already exist — nothing to seed
+
+    seed_password = os.environ.get("ADMIN_SEED_PASSWORD", "")
+    if not seed_password:
+        logger.warning(
+            "No users exist and ADMIN_SEED_PASSWORD is not set. "
+            "Set ADMIN_SEED_PASSWORD to a strong password and restart to create "
+            "the initial admin account, or create a user directly in the database."
         )
-        db.commit()
-        logger.info("Default admin user created (admin / admin).")
+        return
+
+    errors = validate_password_strength(seed_password)
+    if errors:
+        logger.warning(
+            "ADMIN_SEED_PASSWORD does not meet password policy requirements "
+            f"({'; '.join(errors)}). Initial admin account was NOT created. "
+            "Fix the password and restart."
+        )
+        return
+
+    db.execute(
+        text(
+            "INSERT INTO users (username, password_hash, role, is_active, is_admin, can_manifest, created_at) "
+            "VALUES (:u, :p, 'ADMIN', TRUE, 1, 1, NOW())"
+        ),
+        {"u": "admin", "p": hash_password(seed_password)},
+    )
+    db.commit()
+    logger.info(
+        "Initial admin account created (username: admin). "
+        "Remove ADMIN_SEED_PASSWORD from the environment after first login."
+    )
+
+
+def _seed_manifest_counter(db) -> None:
+    """
+    Seed the manifest_counters table for prefix 'A' if no row exists yet.
+
+    Derives the starting value from the highest existing manifest number in
+    the reports table (parsing the numeric part after the prefix).  Falls
+    back to 35425 (so the first generated number will be A35426) when no
+    reports exist.
+    """
+    existing = db.execute(
+        text("SELECT 1 FROM manifest_counters WHERE prefix = 'A'")
+    ).fetchone()
+    if existing:
+        return  # already seeded
+
+    # Find the highest numeric part among existing manifest numbers starting with 'A'
+    # Handles both plain numbers (A35427) and legacy suffixed ones (A35427-2)
+    # by stripping everything from the first dash onward before parsing.
+    row = db.execute(text("""
+        SELECT manifest_number FROM reports
+        WHERE manifest_number LIKE 'A%'
+        ORDER BY id DESC
+    """)).fetchall()
+
+    max_num = 35425  # default: first generated will be A35426
+    for r in row:
+        mn = r[0]  # e.g. "A35427" or "A35427-2"
+        try:
+            numeric_part = mn[1:]  # strip 'A' prefix
+            if '-' in numeric_part:
+                numeric_part = numeric_part.split('-')[0]
+            val = int(numeric_part)
+            if val > max_num:
+                max_num = val
+        except (ValueError, IndexError):
+            continue
+
+    db.execute(
+        text("INSERT INTO manifest_counters (prefix, last_number) VALUES ('A', :n)"),
+        {"n": max_num},
+    )
+    db.commit()
+    logger.info(f"Manifest counter seeded: prefix='A', last_number={max_num}")

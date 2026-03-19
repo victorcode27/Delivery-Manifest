@@ -3,15 +3,16 @@ app/models/manifest.py
 
 SQLAlchemy ORM models for the delivery manifest domain:
 
-    Manifest       → `manifests` table  (uploaded manifest files)
-    Order          → `orders` table  (invoices / credit notes)
-    Report         → `reports` table (dispatch run summaries)
-    ReportItem     → `report_items` table (per-invoice rows in a report)
-    Setting        → `settings` table (drivers, routes, checkers, …)
-    Truck          → `trucks` table
-    CustomerRoute  → `customer_routes` table
-    ManifestEvent  → `manifest_events` table (audit trail)
-    ManifestStaging→ `manifest_staging` table (in-progress allocation)
+    Manifest        → `manifests` table  (uploaded manifest files)
+    Order           → `orders` table  (invoices / credit notes)
+    Report          → `reports` table (dispatch run summaries)
+    ReportItem      → `report_items` table (per-invoice rows in a report)
+    Setting         → `settings` table (drivers, routes, checkers, …)
+    Truck           → `trucks` table
+    CustomerRoute   → `customer_routes` table
+    ManifestEvent   → `manifest_events` table (audit trail)
+    ManifestStaging → `manifest_staging` table (in-progress allocation)
+    ManifestCounter → `manifest_counters` table (sequence counters)
 """
 
 from sqlalchemy import (
@@ -74,7 +75,7 @@ class Report(Base):
     __tablename__ = "reports"
 
     id              = Column(Integer, primary_key=True, index=True)
-    manifest_number = Column(Text, nullable=False, index=True)
+    manifest_number = Column(Text, nullable=False, unique=True, index=True)
     date            = Column(Text)
     date_dispatched = Column(Text, index=True)
     driver          = Column(Text)
@@ -190,3 +191,15 @@ class ManifestStaging(Base):
 
     def to_dict(self) -> dict:
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+
+
+# ── Manifest number sequence counters ────────────────────────────────────────
+
+class ManifestCounter(Base):
+    __tablename__ = "manifest_counters"
+
+    prefix      = Column(Text, primary_key=True)
+    last_number = Column(Integer, nullable=False)
+
+    def to_dict(self) -> dict:
+        return {"prefix": self.prefix, "last_number": self.last_number}

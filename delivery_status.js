@@ -11,6 +11,11 @@
 
 const DS_API = '/api/delivery';
 
+// Role constants — mirrors the backend VALID_ROLES set
+const DS_ROLE_ADMIN    = 'ADMIN';
+const DS_ROLE_DISPATCH = 'DISPATCH';
+const DS_ROLE_DRIVER   = 'DRIVER';
+
 let dsUserRole = null;   // populated in dsInit() from localStorage
 
 let dsState = {
@@ -22,11 +27,27 @@ let dsState = {
     loading:      false,
 };
 
-// Statuses for which a manual confirmation button is offered
-const DS_ACTIONABLE_STATUSES = ['PENDING', 'IN_TRANSIT'];
+// Populated by dsLoadMeta() on init from GET /api/delivery/meta.
+// Replaces the old hardcoded DS_ALLOWED_TRANSITIONS constant.
+let dsAllowedTransitions = {};
+let dsBulkConfirmable    = [];
+
+async function dsLoadMeta() {
+    try {
+        const res = await apiFetch(`${DS_API}/meta`);
+        if (!res.ok) return;
+        const data = await res.json();
+        dsAllowedTransitions = data.allowed_transitions || {};
+        dsBulkConfirmable = Object.entries(dsAllowedTransitions)
+            .filter(([, allowed]) => allowed.includes('DELIVERED'))
+            .map(([status]) => status);
+    } catch (e) {
+        console.error('[DeliveryStatus] Failed to load meta:', e);
+    }
+}
 
 function dsCanConfirm() {
-    return dsUserRole === 'ADMIN' || dsUserRole === 'DISPATCH';
+    return dsUserRole === DS_ROLE_ADMIN || dsUserRole === DS_ROLE_DISPATCH;
 }
 
 // ── Status badge helpers ───────────────────────────────────────────────────
@@ -81,16 +102,16 @@ async function loadManifests() {
 
     try {
         const params = new URLSearchParams();
-        if (dsState.dateFrom)     params.append('date_from', dsState.dateFrom);
-        if (dsState.dateTo)       params.append('date_to',   dsState.dateTo);
-        if (dsState.statusFilter) params.append('status',    dsState.statusFilter);
+        if (dsState.dateFrom) params.append('date_from', dsState.dateFrom);
+        if (dsState.dateTo)   params.append('date_to',   dsState.dateTo);
+        // statusFilter is applied client-side in filterManifests() — backend has no status param
 
         const res = await apiFetch(`${DS_API}/manifests?${params}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
         const data = await res.json();
         dsState.manifests = data.manifests || [];
-        renderManifests(filterBySearch(dsState.manifests));
+        renderManifests(filterManifests(dsState.manifests));
 
     } catch (e) {
         console.error('[DeliveryStatus] Error loading manifests:', e);
@@ -102,16 +123,27 @@ async function loadManifests() {
     }
 }
 
-// ── Client-side search filter ──────────────────────────────────────────────
+// ── Client-side filters (search + manifest status) ─────────────────────────
 
-function filterBySearch(manifests) {
+function filterManifests(manifests) {
+    let result = manifests;
+
     const q = dsState.search.toLowerCase().trim();
-    if (!q) return manifests;
-    return manifests.filter(m =>
-        (m.manifest_number || '').toLowerCase().includes(q) ||
-        (m.driver          || '').toLowerCase().includes(q) ||
-        (m.reg_number      || '').toLowerCase().includes(q)
-    );
+    if (q) {
+        result = result.filter(m =>
+            (m.manifest_number || '').toLowerCase().includes(q) ||
+            (m.driver          || '').toLowerCase().includes(q) ||
+            (m.reg_number      || '').toLowerCase().includes(q)
+        );
+    }
+
+    if (dsState.statusFilter) {
+        result = result.filter(m =>
+            (m.delivery_summary?.status || 'PENDING') === dsState.statusFilter
+        );
+    }
+
+    return result;
 }
 
 // ── Render manifest table ──────────────────────────────────────────────────
@@ -170,19 +202,20 @@ function renderManifests(manifests) {
 
 // ── Detail modal ───────────────────────────────────────────────────────────
 
-// Returns <option> elements for every valid invoice status, pre-selecting currentStatus.
+// Returns <option> elements for the allowed next statuses from currentStatus.
+// Returns empty string for terminal statuses (caller renders "—" in that case).
 function renderActionOptions(currentStatus) {
-    const statuses = ['PENDING', 'IN_TRANSIT', 'DELIVERED', 'FAILED', 'RETURNED', 'PARTIAL'];
-    const labels   = {
-        'PENDING':   'Pending',
-        'IN_TRANSIT':'In Transit',
-        'DELIVERED': 'Delivered',
-        'FAILED':    'Failed',
-        'RETURNED':  'Returned',
-        'PARTIAL':   'Partial',
+    const allowed = dsAllowedTransitions[currentStatus] || [];
+    const labels  = {
+        'PENDING':    'Pending',
+        'IN_TRANSIT': 'In Transit',
+        'DELIVERED':  'Delivered',
+        'FAILED':     'Failed',
+        'RETURNED':   'Returned',
+        'PARTIAL':    'Partial',
     };
-    return statuses.map(s =>
-        `<option value="${s}"${s === currentStatus ? ' selected' : ''}>${labels[s]}</option>`
+    return allowed.map((s, i) =>
+        `<option value="${s}"${i === 0 ? ' selected' : ''}>${labels[s] || s}</option>`
     ).join('');
 }
 
@@ -224,21 +257,24 @@ function renderDetailModal(manifest) {
     const rowsHtml = items.length
         ? items.map(item => {
             const status = item.delivery_status || 'PENDING';
+            const nextOptions = renderActionOptions(status);
             const actionCell = canConfirm
-                ? `<div style="display:flex;gap:6px;align-items:center;">
-                       <select class="ds-status-select"
-                               data-item-id="${item.report_item_id}"
-                               style="font-size:0.75rem;padding:2px 4px;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;">
-                           ${renderActionOptions(status)}
-                       </select>
-                       <button class="apply-invoice-action report-btn report-btn-primary"
-                               data-item-id="${item.report_item_id}"
-                               data-invoice="${dsEsc(item.invoice_number)}"
-                               data-manifest="${dsEsc(manifest.manifest_number)}"
-                               style="font-size:0.75rem;padding:3px 10px;white-space:nowrap;">
-                           Apply
-                       </button>
-                   </div>`
+                ? nextOptions
+                    ? `<div style="display:flex;gap:6px;align-items:center;">
+                           <select class="ds-status-select"
+                                   data-item-id="${item.report_item_id}"
+                                   style="font-size:0.75rem;padding:2px 4px;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;">
+                               ${nextOptions}
+                           </select>
+                           <button class="apply-invoice-action report-btn report-btn-primary"
+                                   data-item-id="${item.report_item_id}"
+                                   data-invoice="${dsEsc(item.invoice_number)}"
+                                   data-manifest="${dsEsc(manifest.manifest_number)}"
+                                   style="font-size:0.75rem;padding:3px 10px;white-space:nowrap;">
+                               Apply
+                           </button>
+                       </div>`
+                    : `<span style="font-size:0.75rem;color:#94a3b8;font-style:italic;">—</span>`
                 : '';
             const modeBadge = item.delivery_mode === 'THIRD_PARTY'
                 ? ` <span style="font-size:0.68rem;font-weight:600;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:3px;padding:1px 5px;vertical-align:middle;" title="Third Party delivery">3P</span>`
@@ -265,7 +301,7 @@ function renderDetailModal(manifest) {
         : `<tr><td colspan="${colCount}" style="text-align:center;color:#94a3b8">No invoices found</td></tr>`;
 
     const hasUnresolved = items.some(item =>
-        DS_ACTIONABLE_STATUSES.includes(item.delivery_status || 'PENDING')
+        dsBulkConfirmable.includes(item.delivery_status || 'PENDING')
     );
     const bulkBtnHtml = (canConfirm && hasUnresolved)
         ? `<div style="margin-bottom:12px;text-align:right;">
@@ -438,7 +474,7 @@ function resetFilters() {
 
 function handleSearch() {
     dsState.search = document.getElementById('ds-search').value;
-    renderManifests(filterBySearch(dsState.manifests));
+    renderManifests(filterManifests(dsState.manifests));
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
@@ -486,6 +522,9 @@ function dsInit() {
         if (bulkBtn) bulkConfirmManifest(bulkBtn.dataset.manifest);
     });
 
+    // Load backend constants (allowed_transitions) then fetch manifests.
+    // Both calls are async; meta will resolve well before the user opens a detail modal.
+    dsLoadMeta();
     loadManifests();
 }
 

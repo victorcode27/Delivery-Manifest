@@ -13,6 +13,7 @@ const API_URL = '/api';
 const ROLE_ADMIN        = 'ADMIN';
 const ROLE_DISPATCH     = 'DISPATCH';
 const ROLE_REPORTS_ONLY = 'REPORTS_ONLY';
+const ROLE_DRIVER       = 'DRIVER';
 
 // ── Settings data ─────────────────────────────────────────
 let settingsData = {
@@ -834,10 +835,12 @@ async function renderUsersList() {
 
             const isSelf = currentUsername && currentUsername === user.username;
 
-            const roleBadgeClass = user.role === ROLE_ADMIN     ? 'full-access' :
-                                   user.role === ROLE_DISPATCH   ? 'dispatch'    : 'reports-only';
-            const roleBadgeText  = user.role === ROLE_ADMIN     ? 'Admin'        :
-                                   user.role === ROLE_DISPATCH   ? 'Dispatch'    : 'Reports Only';
+            const roleBadgeClass = user.role === ROLE_ADMIN        ? 'full-access'  :
+                                   user.role === ROLE_DISPATCH     ? 'dispatch'     :
+                                   user.role === ROLE_DRIVER       ? 'driver'       : 'reports-only';
+            const roleBadgeText  = user.role === ROLE_ADMIN        ? 'Admin'        :
+                                   user.role === ROLE_DISPATCH     ? 'Dispatch'     :
+                                   user.role === ROLE_DRIVER       ? 'Driver'       : 'Reports Only';
 
             const statusClass = user.is_active ? 'active'   : 'inactive';
             const statusText  = user.is_active ? 'Active'   : 'Inactive';
@@ -856,6 +859,7 @@ async function renderUsersList() {
                             <option value="ADMIN"        ${user.role === 'ADMIN'        ? 'selected' : ''}>Admin</option>
                             <option value="DISPATCH"     ${user.role === 'DISPATCH'     ? 'selected' : ''}>Dispatch</option>
                             <option value="REPORTS_ONLY" ${user.role === 'REPORTS_ONLY' ? 'selected' : ''}>Reports Only</option>
+                            <option value="DRIVER"       ${user.role === 'DRIVER'       ? 'selected' : ''}>Driver</option>
                         </select>
                         <label class="toggle-switch" title="${user.is_active ? 'Deactivate' : 'Activate'} user">
                             <input type="checkbox" ${user.is_active ? 'checked' : ''} onchange="handleStatusToggle(${user.id}, this.checked)">

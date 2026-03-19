@@ -19,7 +19,12 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from delivery_manifest_backend.app.db.database import get_db_session, execute_query
+from delivery_manifest_backend.app.db.database import get_db_session, execute_query, _is_sqlite
+from delivery_manifest_backend.app.core.constants import (
+    ORDER_TYPE_INVOICE, ORDER_TYPE_CREDIT_NOTE,
+    INVOICE_STATUS_PENDING, INVOICE_STATUS_CANCELLED,
+    INVOICE_STATUS_PROCESSED, INVOICE_STATUS_ORPHAN,
+)
 from delivery_manifest_backend.app.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -40,7 +45,8 @@ def get_all_orders(allocated: bool = False) -> List[Dict]:
         if allocated:
             result = execute_query(
                 db,
-                "SELECT * FROM orders WHERE type = 'INVOICE' ORDER BY date_processed DESC",
+                "SELECT * FROM orders WHERE type = ? ORDER BY date_processed DESC",
+                (ORDER_TYPE_INVOICE,),
             )
         else:
             result = execute_query(
@@ -48,10 +54,11 @@ def get_all_orders(allocated: bool = False) -> List[Dict]:
                 """
                 SELECT * FROM orders
                 WHERE is_allocated = 0
-                  AND type = 'INVOICE'
-                  AND status != 'CANCELLED'
+                  AND type = ?
+                  AND status != ?
                 ORDER BY date_processed DESC
                 """,
+                (ORDER_TYPE_INVOICE, INVOICE_STATUS_CANCELLED),
             )
         return [dict(row._mapping) for row in result.fetchall()]
     finally:
@@ -80,8 +87,8 @@ def get_available_orders_excluding_staging(
                       SELECT 1 FROM manifest_staging ms
                       WHERE ms.invoice_id = o.id
                   )
-              AND o.type = 'INVOICE'
-              AND o.status != 'CANCELLED'
+              AND o.type = ?
+              AND o.status != ?
               AND (
                     o.manifest_number IS NULL
                  OR NOT EXISTS (
@@ -90,7 +97,7 @@ def get_available_orders_excluding_staging(
                     )
               )
         """
-        params: list = []
+        params: list = [ORDER_TYPE_INVOICE, INVOICE_STATUS_CANCELLED]
 
         # Optional area filter — pushed into SQL so pagination is accurate
         if area:
@@ -99,7 +106,7 @@ def get_available_orders_excluding_staging(
 
         # Total count for pagination metadata (same WHERE, no LIMIT)
         total: int = execute_query(
-            db, f"SELECT COUNT(*) {where}", params or None
+            db, f"SELECT COUNT(*) {where}", params
         ).fetchone()[0]
 
         # Paginated data fetch
@@ -125,8 +132,8 @@ def get_order_by_invoice_number(invoice_number: str) -> Optional[Dict]:
     try:
         result = execute_query(
             db,
-            "SELECT * FROM orders WHERE invoice_number = ? AND type = 'INVOICE'",
-            (invoice_number,),
+            "SELECT * FROM orders WHERE invoice_number = ? AND type = ?",
+            (invoice_number, ORDER_TYPE_INVOICE),
         )
         row = result.fetchone()
         return dict(row._mapping) if row else None
@@ -148,8 +155,8 @@ def _apply_credit_note(cn: Dict, invoice: Dict) -> bool:
     inv_number = invoice.get("invoice_number", "?")
 
     try:
-        credit_val  = float(str(cn["total_value"]).replace(",", ""))
-        invoice_val = float(str(invoice["total_value"]).replace(",", ""))
+        credit_val  = float(str(cn["total_value"]).replace(",", "").replace("$", "").strip())
+        invoice_val = float(str(invoice["total_value"]).replace(",", "").replace("$", "").strip())
     except (ValueError, TypeError):
         logger.error(
             f"[Reconcile] Cannot parse values — CN {cn_number}: {cn.get('total_value')!r}, "
@@ -179,8 +186,8 @@ def _apply_credit_note(cn: Dict, invoice: Dict) -> bool:
     try:
         execute_query(
             db,
-            "UPDATE orders SET status = 'PROCESSED' WHERE id = ?",
-            (cn["id"],),
+            "UPDATE orders SET status = ? WHERE id = ?",
+            (INVOICE_STATUS_PROCESSED, cn["id"]),
         )
         db.commit()
     finally:
@@ -206,11 +213,11 @@ def _reconcile_orphans_for_invoice(invoice_number: str) -> int:
             db,
             """
             SELECT * FROM orders
-            WHERE type            = 'CREDIT_NOTE'
-              AND status          = 'ORPHAN'
+            WHERE type            = ?
+              AND status          = ?
               AND reference_number = ?
             """,
-            (invoice_number,),
+            (ORDER_TYPE_CREDIT_NOTE, INVOICE_STATUS_ORPHAN, invoice_number),
         )
         orphans = [dict(row._mapping) for row in result.fetchall()]
     finally:
@@ -257,12 +264,12 @@ def reconcile_all_orphans() -> int:
             db,
             """
             SELECT * FROM orders
-            WHERE type             = 'CREDIT_NOTE'
-              AND status           = 'ORPHAN'
+            WHERE type             = ?
+              AND status           = ?
               AND reference_number IS NOT NULL
             ORDER BY id
             """,
-            None,
+            (ORDER_TYPE_CREDIT_NOTE, INVOICE_STATUS_ORPHAN),
         )
         orphans = [dict(row._mapping) for row in result.fetchall()]
     finally:
@@ -328,10 +335,10 @@ def add_order(order_data: Dict) -> bool:
                 order_data.get("invoice_number", "N/A"),
                 order_data.get("invoice_date", "N/A"),
                 order_data.get("area", "UNKNOWN"),
-                order_data.get("type", "INVOICE"),
+                order_data.get("type", ORDER_TYPE_INVOICE),
                 order_data.get("reference_number"),
                 order_data.get("original_value"),
-                order_data.get("status", "PENDING"),
+                order_data.get("status", INVOICE_STATUS_PENDING),
                 order_data.get("customer_number", "N/A"),
             ),
         )
@@ -339,7 +346,7 @@ def add_order(order_data: Dict) -> bool:
 
         # Post-import hook: if this is a new invoice, immediately reconcile any
         # ORPHAN credit notes that arrived before it and have been waiting.
-        if order_data.get("type", "INVOICE") == "INVOICE":
+        if order_data.get("type", ORDER_TYPE_INVOICE) == ORDER_TYPE_INVOICE:
             if inv_num and inv_num != "N/A":
                 _reconcile_orphans_for_invoice(inv_num)
 
@@ -351,7 +358,14 @@ def add_order(order_data: Dict) -> bool:
 
 
 def allocate_orders(filenames: List[str], manifest_number: Optional[str] = None) -> int:
-    """Mark orders as allocated.  Returns count updated."""
+    """
+    Mark orders as allocated.  Returns count updated.
+
+    NOTE: This function is NOT wired to any API route and bypasses the
+    staging workflow entirely.  It exists for internal/scripted use only.
+    Do not expose it via a new endpoint — use save_report() instead, which
+    runs allocation inside the finalisation transaction.
+    """
     db = get_db_session()
     try:
         allocated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -372,12 +386,37 @@ def allocate_orders(filenames: List[str], manifest_number: Optional[str] = None)
 
 
 def deallocate_orders(filenames: List[str]) -> int:
-    """Reset orders to pending.  Returns count updated."""
+    """
+    Reset orders to pending and remove them from staging.  Returns count updated.
+
+    Both the orders reset and the staging cleanup happen inside a single
+    transaction so ghost staging rows cannot hide invoices from availability
+    queries after a restore operation.
+    """
     if not filenames:
         return 0
     db = get_db_session()
     try:
         placeholders = ",".join(["?" for _ in filenames])
+
+        # Resolve filenames → order IDs for staging cleanup
+        id_rows = execute_query(
+            db,
+            f"SELECT id FROM orders WHERE filename IN ({placeholders})",
+            filenames,
+        ).fetchall()
+        invoice_ids = [r._mapping["id"] for r in id_rows]
+
+        # Remove from staging (any session) in the same transaction
+        if invoice_ids:
+            id_ph = ",".join(["?" for _ in invoice_ids])
+            execute_query(
+                db,
+                f"DELETE FROM manifest_staging WHERE invoice_id IN ({id_ph})",
+                invoice_ids,
+            )
+
+        # Reset allocation flags
         result = execute_query(
             db,
             f"""
@@ -398,8 +437,8 @@ def cancel_order(invoice_number: str) -> bool:
     try:
         result = execute_query(
             db,
-            "UPDATE orders SET status = 'CANCELLED' WHERE invoice_number = ?",
-            (invoice_number,),
+            "UPDATE orders SET status = ? WHERE invoice_number = ?",
+            (INVOICE_STATUS_CANCELLED, invoice_number),
         )
         db.commit()
         return result.rowcount > 0
@@ -482,16 +521,24 @@ def get_all_customers() -> List[str]:
 # MANIFEST STAGING
 # ══════════════════════════════════════════════════════════════════════════════
 
-def add_to_staging(session_id: str, filenames: List[str]) -> int:
+def add_to_staging(session_id: str, filenames: List[str]) -> Dict:
     """
-    Stage invoices for a manifest session.  Returns count added.
+    Stage invoices for a manifest session.
 
-    Previously issued one SELECT per filename to check for duplicates (N+1).
-    Now uses a single bulk existence check — 2 round trips regardless of
-    how many invoices are being staged.
+    Returns a dict with four keys:
+        added        – invoices newly staged this call
+        already_yours – already in this session (skipped)
+        taken        – staged by a different session (rejected)
+        not_found    – filename not in orders table
+
+    The UNIQUE(invoice_id) constraint on manifest_staging prevents the same
+    invoice from being claimed by two sessions simultaneously.  The pre-check
+    classifies each invoice before attempting the INSERT; any residual race is
+    handled by INSERT OR IGNORE / ON CONFLICT DO NOTHING returning no row.
     """
+    result: Dict = {"added": 0, "already_yours": 0, "taken": 0, "not_found": 0}
     if not filenames or not session_id:
-        return 0
+        return result
     db = get_db_session()
     try:
         # 1. Resolve filenames → invoice IDs (single query)
@@ -502,35 +549,53 @@ def add_to_staging(session_id: str, filenames: List[str]) -> int:
             filenames,
         ).fetchall()
         invoice_ids = [row._mapping["id"] for row in rows]
+        result["not_found"] = len(filenames) - len(invoice_ids)
 
         if not invoice_ids:
-            return 0
+            return result
 
-        # 2. Single bulk check: which of these IDs are already staged?
+        # 2. Single bulk check: which IDs are already staged, and by whom?
         id_ph = ",".join(["?" for _ in invoice_ids])
-        already_staged = {
-            row._mapping["invoice_id"]
-            for row in execute_query(
-                db,
-                f"SELECT invoice_id FROM manifest_staging "
-                f"WHERE session_id = ? AND invoice_id IN ({id_ph})",
-                [session_id] + invoice_ids,
-            ).fetchall()
-        }
+        staged_rows = execute_query(
+            db,
+            f"SELECT invoice_id, session_id FROM manifest_staging WHERE invoice_id IN ({id_ph})",
+            invoice_ids,
+        ).fetchall()
+        staged_map = {r._mapping["invoice_id"]: r._mapping["session_id"] for r in staged_rows}
 
-        # 3. Insert only the IDs not yet in staging
-        added = 0
+        # 3. Partition into categories; build insert list
+        to_insert = []
         for invoice_id in invoice_ids:
-            if invoice_id not in already_staged:
-                execute_query(
-                    db,
-                    "INSERT INTO manifest_staging (session_id, invoice_id) VALUES (?, ?)",
-                    (session_id, invoice_id),
-                )
-                added += 1
+            if invoice_id in staged_map:
+                if staged_map[invoice_id] == session_id:
+                    result["already_yours"] += 1
+                else:
+                    result["taken"] += 1
+            else:
+                to_insert.append(invoice_id)
+
+        # 4. INSERT with conflict-safe syntax so races never raise exceptions.
+        #    RETURNING id is appended by execute_query; a None fetchone() means
+        #    the row was silently skipped (race — another session claimed it).
+        if _is_sqlite:
+            insert_sql = (
+                "INSERT OR IGNORE INTO manifest_staging (session_id, invoice_id) VALUES (?, ?)"
+            )
+        else:
+            insert_sql = (
+                "INSERT INTO manifest_staging (session_id, invoice_id) VALUES (?, ?) "
+                "ON CONFLICT (invoice_id) DO NOTHING"
+            )
+
+        for invoice_id in to_insert:
+            r = execute_query(db, insert_sql, (session_id, invoice_id))
+            if r.fetchone() is not None:
+                result["added"] += 1
+            else:
+                result["taken"] += 1  # race: claimed between check and insert
 
         db.commit()
-        return added
+        return result
     finally:
         db.close()
 
@@ -633,60 +698,224 @@ def clear_staging(session_id: str) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# MANIFEST NUMBER GENERATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def generate_manifest_number(db, prefix: str = "A") -> str:
+    """
+    Atomically increment the manifest_counters row for *prefix* and return
+    the next manifest number (e.g. "A35428").
+
+    The caller MUST pass an active DB session.  The counter increment is
+    flushed inside the caller's transaction — if that transaction rolls back,
+    the incremented value is never committed and the slot is reclaimed.
+
+    Raises RuntimeError if the counter row for *prefix* does not exist.
+
+    Locking strategy
+    ----------------
+    PostgreSQL:
+        SELECT ... FOR UPDATE acquires a row-level lock on the
+        manifest_counters row before the read.  Any concurrent caller that
+        reaches the same SELECT FOR UPDATE must wait until this transaction
+        commits or rolls back.  The subsequent UPDATE then writes the new
+        value under that lock.  This gives serialised, gap-free increments.
+
+    SQLite:
+        SQLite does not support SELECT FOR UPDATE.  Instead we use an
+        atomic single-statement UPDATE that increments the counter
+        in-place (last_number = last_number + 1) and then SELECT to
+        read the just-written value within the same transaction.
+
+        Why this is safe: SQLite allows only one writer at a time.
+        When two concurrent sessions both attempt the UPDATE, SQLite
+        serialises them at the write-lock boundary.  Each UPDATE reads
+        the current committed (or within-transaction) value of last_number
+        at execution time — not the value the session may have previously
+        read with a SELECT — so both increments are applied sequentially
+        and produce distinct results (e.g. 35428, then 35429).
+
+        Accepted limitation: SQLite's write serialisation is at the
+        database-file level, not row level.  Under very high concurrent
+        write load a session may receive SQLITE_BUSY (mapped to
+        OperationalError by SQLAlchemy).  This is acceptable for a
+        single-server dispatch office application where concurrent
+        manifest saves are rare.  Production uses PostgreSQL with
+        proper row-level locking.
+    """
+    if _is_sqlite:
+        # Atomic increment: SQLite serialises concurrent writes, so two
+        # concurrent UPDATEs queue at the write-lock boundary.  Each reads
+        # the already-committed value of last_number at execution time.
+        result = db.execute(
+            text("UPDATE manifest_counters SET last_number = last_number + 1 WHERE prefix = :p"),
+            {"p": prefix},
+        )
+        if result.rowcount == 0:
+            raise RuntimeError(
+                f"Manifest counter row for prefix '{prefix}' not found. "
+                f"Run database initialisation (init_db) to seed the manifest_counters table."
+            )
+        # Read the value we just wrote (within our own transaction — no other
+        # session can see or modify it until we commit).
+        row = db.execute(
+            text("SELECT last_number FROM manifest_counters WHERE prefix = :p"),
+            {"p": prefix},
+        ).fetchone()
+        return f"{prefix}{row[0]}"
+
+    else:
+        # PostgreSQL: lock the row before reading to prevent concurrent readers
+        # from seeing the same value before we write.
+        row = db.execute(
+            text("SELECT last_number FROM manifest_counters WHERE prefix = :p FOR UPDATE"),
+            {"p": prefix},
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"Manifest counter row for prefix '{prefix}' not found. "
+                f"Run database initialisation (init_db) to seed the manifest_counters table."
+            )
+        next_number = row[0] + 1
+        db.execute(
+            text("UPDATE manifest_counters SET last_number = :n WHERE prefix = :p"),
+            {"n": next_number, "p": prefix},
+        )
+        return f"{prefix}{next_number}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # REPORTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def save_report(report_data: Dict) -> int:
-    """Persist a dispatch report and finalise its staged invoices."""
+def save_report(report_data: Dict) -> dict:
+    """
+    Persist a dispatch report and finalise its staged invoices.
+
+    The manifest number is generated atomically by the backend inside the
+    same transaction that inserts the report.  Any client-supplied
+    manifestNumber is ignored (transition safety).
+
+    The authoritative invoice set comes from the server-side staging table
+    joined to orders — the client-supplied invoices[] payload is used only
+    as a supplement for per-line sku and weight, which are not stored in the
+    orders table.  All other report_items fields (invoice_number, customer_name,
+    value, etc.) come from the DB.  The report header totals (total_value,
+    total_sku, total_weight) are computed from the saved line items; any
+    frontend-supplied totalSku / totalWeight / totalValue fields are ignored.
+
+    Raises:
+        ValueError  – session_id missing, or no staged invoices for this session.
+
+    Returns {"id": report_id, "manifest_number": generated_number}.
+    """
+    session_id = report_data.get("session_id")
+    if not session_id:
+        raise ValueError("session_id is required to finalise a manifest")
+
     db = get_db_session()
     try:
-        manifest_number = report_data.get("manifestNumber")
+        # ── Fetch authoritative staged invoice set ────────────────────────
+        staged_rows = execute_query(
+            db,
+            """
+            SELECT o.id, o.filename, o.invoice_number, o.order_number,
+                   o.customer_name, o.invoice_date, o.area, o.customer_number,
+                   o.total_value
+            FROM orders o
+            INNER JOIN manifest_staging ms ON ms.invoice_id = o.id
+            WHERE ms.session_id = ?
+            """,
+            (session_id,),
+        ).fetchall()
 
-        # Retry with a unique suffix if manifest_number already exists
-        report_id = None
-        for attempt in range(5):
-            try:
-                if attempt > 0:
-                    db.rollback()
-                result = execute_query(
-                    db,
-                    """
-                    INSERT INTO reports
-                        (manifest_number, date, date_dispatched, driver, assistant, checker,
-                         reg_number, pallets_brown, pallets_blue, crates, mileage,
-                         total_value, total_sku, total_weight, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        manifest_number,
-                        report_data.get("date"),
-                        report_data.get("date"),
-                        report_data.get("driver"),
-                        report_data.get("assistant"),
-                        report_data.get("checker"),
-                        report_data.get("regNumber"),
-                        report_data.get("palletsBrown", 0),
-                        report_data.get("palletsBlue", 0),
-                        report_data.get("crates", 0),
-                        report_data.get("mileage", 0),
-                        report_data.get("totalValue", 0),
-                        report_data.get("totalSku", 0),
-                        report_data.get("totalWeight", 0),
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    ),
-                )
-                row = result.fetchone()
-                report_id = row[0] if row else None
-                break  # success
-            except IntegrityError:
-                # Duplicate manifest_number — generate a unique alternative
-                manifest_number = f"{report_data.get('manifestNumber')}-{attempt + 1}"
+        if not staged_rows:
+            raise ValueError(
+                f"No staged invoices found for session '{session_id}' — "
+                "cannot create an empty manifest"
+            )
+
+        staged_invoices  = [dict(row._mapping) for row in staged_rows]
+        staged_filenames = [inv["filename"] for inv in staged_invoices]
+
+        # ── Build lookup: frontend payload for sku/weight supplement ─────
+        # These fields are not stored in the orders table and must come from
+        # the frontend.  All other fields use the DB as authoritative source.
+        frontend_map: Dict[str, Dict] = {}
+        for inv in report_data.get("invoices", []):
+            key = (inv.get("num") or inv.get("invoice_number") or "").strip()
+            if key:
+                frontend_map[key] = inv
+
+        # ── Compute total_value from DB rows (authoritative) ─────────────
+        db_total_value = sum(_parse_value(inv["total_value"]) for inv in staged_invoices)
+
+        # ── Build line items; derive aggregate SKU/weight from saved lines ─
+        # value comes from the DB orders.total_value (authoritative).
+        # sku and weight are not in the orders table — pulled from the
+        # frontend invoices[] payload.  Aggregate totals (total_sku,
+        # total_weight) are then computed from the saved line values so the
+        # report header is always consistent with its detail rows.
+        # The frontend-supplied totalSku / totalWeight fields are ignored.
+        line_items = []
+        for inv in staged_invoices:
+            inv_num = inv["invoice_number"] or "N/A"
+            fe      = frontend_map.get(inv_num, {})
+            line_items.append({
+                "inv_num":         inv_num,
+                "order_number":    inv["order_number"]    or "N/A",
+                "customer_name":   inv["customer_name"]   or "N/A",
+                "invoice_date":    inv["invoice_date"]    or "N/A",
+                "area":            inv["area"]            or "UNKNOWN",
+                "customer_number": inv["customer_number"] or "N/A",
+                "sku":    int(fe.get("sku",    0) or 0),
+                "value":  _parse_value(inv["total_value"]),  # from DB — authoritative
+                "weight": float(fe.get("weight", 0) or 0),
+            })
+
+        db_total_sku    = sum(item["sku"]    for item in line_items)
+        db_total_weight = sum(item["weight"] for item in line_items)
+
+        # ── Generate manifest number inside the transaction ──────────────
+        manifest_number = generate_manifest_number(db, prefix="A")
+
+        result = execute_query(
+            db,
+            """
+            INSERT INTO reports
+                (manifest_number, date, date_dispatched, driver, assistant, checker,
+                 reg_number, pallets_brown, pallets_blue, crates, mileage,
+                 total_value, total_sku, total_weight, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                manifest_number,
+                report_data.get("date"),
+                report_data.get("date"),
+                report_data.get("driver"),
+                report_data.get("assistant"),
+                report_data.get("checker"),
+                report_data.get("regNumber"),
+                report_data.get("palletsBrown", 0),
+                report_data.get("palletsBlue", 0),
+                report_data.get("crates", 0),
+                report_data.get("mileage", 0),
+                db_total_value,   # authoritative: sum of DB invoice values
+                db_total_sku,     # authoritative: sum of report_items.sku
+                db_total_weight,  # authoritative: sum of report_items.weight
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        row = result.fetchone()
+        report_id = row[0] if row else None
 
         if report_id is None:
-            raise RuntimeError(f"Failed to insert report after retries (manifest: {manifest_number})")
+            raise RuntimeError(
+                f"Failed to insert report (manifest: {manifest_number})"
+            )
 
-        # Persist invoice line items
-        for inv in report_data.get("invoices", []):
+        # ── Insert report_items ───────────────────────────────────────────
+        for item in line_items:
             execute_query(
                 db,
                 """
@@ -697,56 +926,47 @@ def save_report(report_data: Dict) -> int:
                 """,
                 (
                     report_id,
-                    inv.get("num") or inv.get("invoice_number", "N/A"),
-                    inv.get("orderNum") or inv.get("order_number", "N/A"),
-                    inv.get("customer") or inv.get("customer_name", "N/A"),
-                    inv.get("invoiceDate") or inv.get("invoice_date", "N/A"),
-                    inv.get("area", "UNKNOWN"),
-                    inv.get("sku", 0),
-                    inv.get("value", 0) or inv.get("total_value", 0),
-                    inv.get("weight", 0),
-                    inv.get("customerNumber") or inv.get("customer_number", "N/A"),
+                    item["inv_num"],
+                    item["order_number"],
+                    item["customer_name"],
+                    item["invoice_date"],
+                    item["area"],
+                    item["sku"],
+                    item["value"],
+                    item["weight"],
+                    item["customer_number"],
                 ),
             )
 
-        # Finalise staged invoices for this session
-        session_id = report_data.get("session_id")
-        if session_id:
-            staged_rows = execute_query(
-                db,
-                """
-                SELECT o.filename FROM orders o
-                INNER JOIN manifest_staging ms ON ms.invoice_id = o.id
-                WHERE ms.session_id = ?
-                """,
-                (session_id,),
-            ).fetchall()
-            staged_filenames = [r._mapping["filename"] for r in staged_rows]
+        # ── Allocate all staged orders ─────────────────────────────────────
+        ph = ",".join(["?" for _ in staged_filenames])
+        allocated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        execute_query(
+            db,
+            f"""
+            UPDATE orders
+            SET is_allocated = 1, allocated_date = ?, manifest_number = ?
+            WHERE filename IN ({ph})
+            """,
+            [allocated_date, manifest_number] + staged_filenames,
+        )
 
-            if staged_filenames:
-                ph = ",".join(["?" for _ in staged_filenames])
-                allocated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                execute_query(
-                    db,
-                    f"""
-                    UPDATE orders
-                    SET is_allocated = 1, allocated_date = ?, manifest_number = ?
-                    WHERE filename IN ({ph})
-                    """,
-                    [allocated_date, manifest_number] + staged_filenames,
-                )
-
-            execute_query(
-                db,
-                "DELETE FROM manifest_staging WHERE session_id = ?",
-                (session_id,),
-            )
+        # ── Clean staging ─────────────────────────────────────────────────
+        execute_query(
+            db,
+            "DELETE FROM manifest_staging WHERE session_id = ?",
+            (session_id,),
+        )
 
         db.commit()
 
         # Audit log (outside the main transaction)
         log_manifest_event(manifest_number, "CREATED", "System")
-        return report_id
+        return {"id": report_id, "manifest_number": manifest_number}
+
+    except (ValueError, RuntimeError):
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -902,11 +1122,12 @@ def get_outstanding_orders(
                       SELECT 1 FROM report_items ri
                       WHERE ri.invoice_number = o.invoice_number
                   )
-              AND o.status != 'CANCELLED'
-              AND o.type = 'INVOICE'
+              AND o.status != ?
+              AND o.type = ?
         """
+        where_params = (INVOICE_STATUS_CANCELLED, ORDER_TYPE_INVOICE)
 
-        total: int = execute_query(db, f"SELECT COUNT(*) {where}").fetchone()[0]
+        total: int = execute_query(db, f"SELECT COUNT(*) {where}", where_params).fetchone()[0]
 
         result = execute_query(
             db,
@@ -917,7 +1138,7 @@ def get_outstanding_orders(
             ORDER BY o.invoice_date DESC, o.invoice_number DESC
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            (*where_params, limit, offset),
         )
         keys = [
             "invoice_number", "order_number", "customer_name", "invoice_date",
@@ -1180,6 +1401,14 @@ def refresh_invoices() -> None:
         invoice_processor.main()
 
 
+def _parse_value(value_str) -> float:
+    """Parse a monetary string like '1,234.56' or '$1234.56' to float.  Returns 0.0 on error."""
+    try:
+        return float(str(value_str).replace(",", "").replace("$", "").strip())
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def create_manual_invoice(
     customer_name:   str,
     total_value:     str,
@@ -1210,3 +1439,95 @@ def create_manual_invoice(
         }
     )
     return filename if ok else None
+
+
+def create_manual_invoice_and_stage(
+    session_id:      str,
+    customer_name:   str,
+    total_value:     str,
+    invoice_number:  str,
+    order_number:    str,
+    customer_number: str,
+    area:            str,
+) -> Optional[str]:
+    """
+    Atomically insert a manual invoice and stage it for *session_id*.
+
+    Both the orders INSERT and the manifest_staging INSERT occur inside a
+    single transaction — there is no window where the invoice exists in the
+    DB but is not yet staged, eliminating the partial-failure hole in the
+    previous two-step frontend workflow.
+
+    Returns the generated filename on success, or None if the invoice
+    number already exists (duplicate).
+    """
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"MANUAL_{ts}_{secrets.token_hex(4)}.pdf"
+    db = get_db_session()
+    try:
+        # Pre-check for duplicate invoice_number to give a clean early exit
+        if invoice_number and invoice_number != "N/A":
+            existing = db.execute(
+                text("SELECT 1 FROM orders WHERE invoice_number = :inv"),
+                {"inv": invoice_number},
+            ).fetchone()
+            if existing:
+                logger.info(
+                    f"[Manual Invoice] Duplicate invoice_number {invoice_number!r} — skipping."
+                )
+                return None
+
+        # INSERT order
+        row = execute_query(
+            db,
+            """
+            INSERT INTO orders
+                (filename, date_processed, customer_name, total_value,
+                 order_number, invoice_number, invoice_date, area,
+                 type, reference_number, original_value, status, customer_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                filename,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                customer_name,
+                total_value,
+                order_number,
+                invoice_number,
+                datetime.now().strftime("%Y-%m-%d"),
+                area,
+                ORDER_TYPE_INVOICE,
+                None,
+                None,
+                INVOICE_STATUS_PENDING,
+                customer_number,
+            ),
+        ).fetchone()
+
+        if row is None:
+            raise RuntimeError(f"Failed to insert manual invoice {invoice_number!r}")
+        invoice_id = row[0]
+
+        # Stage in the same transaction — atomic with the INSERT above
+        execute_query(
+            db,
+            "INSERT INTO manifest_staging (session_id, invoice_id) VALUES (?, ?)",
+            (session_id, invoice_id),
+        )
+
+        db.commit()
+        logger.info(
+            f"[Manual Invoice] Created and staged {invoice_number!r} "
+            f"(filename={filename}) for session '{session_id}'"
+        )
+        return filename
+
+    except IntegrityError:
+        db.rollback()
+        logger.info(
+            f"[Manual Invoice] IntegrityError for {invoice_number!r} — "
+            "duplicate filename or invoice_number."
+        )
+        return None
+    finally:
+        db.close()

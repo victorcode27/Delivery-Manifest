@@ -55,6 +55,13 @@ def verify_password(plain_password: str, stored_hash: str) -> bool:
 hash_password = get_password_hash
 
 
+# ── Role constants ────────────────────────────────────────────────────────
+# Single canonical definition — imported by schemas/user.py and user_service.py.
+# Never define VALID_ROLES anywhere else.
+
+VALID_ROLES: tuple[str, ...] = ("ADMIN", "DISPATCH", "REPORTS_ONLY", "DRIVER")
+
+
 # ── Password policy ───────────────────────────────────────────────────────
 
 def validate_password_strength(password: str) -> list[str]:

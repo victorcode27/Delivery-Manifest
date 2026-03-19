@@ -17,6 +17,20 @@ VALID_DELIVERY_STATUSES = (
     "RETURNED",
 )
 
+# Canonical transition rules for invoice-level delivery status.
+# Key   : current status.
+# Value : frozenset of statuses that may follow.
+# DELIVERED has an empty frozenset — it is terminal; no outbound transitions are allowed.
+# PENDING is the implicit initial state and is not a valid target for explicit transitions.
+ALLOWED_TRANSITIONS: dict = {
+    "PENDING":    frozenset({"IN_TRANSIT"}),
+    "IN_TRANSIT": frozenset({"DELIVERED", "FAILED", "PARTIAL", "RETURNED"}),
+    "FAILED":     frozenset({"IN_TRANSIT"}),
+    "PARTIAL":    frozenset({"IN_TRANSIT"}),
+    "RETURNED":   frozenset({"IN_TRANSIT"}),
+    "DELIVERED":  frozenset(),  # terminal — no outbound transitions
+}
+
 
 # ── Nested summary model ───────────────────────────────────────────────────────
 

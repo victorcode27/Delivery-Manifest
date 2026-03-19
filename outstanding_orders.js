@@ -356,9 +356,16 @@ function escapeHtml(text) {
 }
 
 // Initialize when DOM is ready
+function requireOfficeRole() {
+    if (getUserRole() === 'DRIVER') {
+        window.location.href = 'delivery_status.html';
+    }
+}
+
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => { requireAuth(); init(); });
+    document.addEventListener('DOMContentLoaded', () => { requireAuth(); requireOfficeRole(); init(); });
 } else {
     requireAuth();
+    requireOfficeRole();
     init();
 }

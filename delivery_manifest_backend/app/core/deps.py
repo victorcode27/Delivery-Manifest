@@ -6,17 +6,18 @@ FastAPI dependency helpers for JWT authentication.
 Permission tiers (lowest → highest):
 
   get_current_user          — any authenticated, active user
-  require_delivery_access   — DRIVER, ADMIN, or DISPATCH (delivery execution)
+  require_delivery_read     — all four roles (delivery list/detail reads)
+  require_delivery_access   — DRIVER, ADMIN, or DISPATCH (delivery execution writes)
+  require_office_read       — ADMIN, DISPATCH, REPORTS_ONLY; DRIVER blocked
   require_dispatch_or_admin — ADMIN or DISPATCH (manifest/invoice/report writes)
   require_office            — ADMIN or DISPATCH (office-side delivery oversight)
   require_admin             — ADMIN only (settings, trucks, users)
-  require_driver            — DRIVER only (field-driver-exclusive endpoints)
 
 Usage in a route::
 
     from app.core.deps import (
         get_current_user, require_dispatch_or_admin, require_admin,
-        require_driver, require_office, require_delivery_access,
+        require_office, require_delivery_access,
     )
 
     @router.post("/invoices/allocate")
@@ -40,6 +41,15 @@ logger = get_logger(__name__)
 
 # Tells FastAPI / Swagger UI where the token endpoint is (informational only)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+# ── Named role subsets ────────────────────────────────────────────────────────
+# Derived from VALID_ROLES (canonical in security.py).  Guard functions use
+# these frozensets so each permission tier has a single named definition.
+_ADMIN_ROLES          = frozenset({"ADMIN"})
+_OFFICE_ROLES         = frozenset({"ADMIN", "DISPATCH"})
+_OFFICE_READ_ROLES    = frozenset({"ADMIN", "DISPATCH", "REPORTS_ONLY"})
+_DELIVERY_WRITE_ROLES = frozenset({"DRIVER", "ADMIN", "DISPATCH"})
+_DELIVERY_READ_ROLES  = frozenset({"DRIVER", "ADMIN", "DISPATCH", "REPORTS_ONLY"})
 
 
 def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
@@ -98,7 +108,7 @@ def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     Raises 403 unless the caller has ADMIN role.
     """
     role = current_user.get("role", "")
-    if role not in ("ADMIN",):
+    if role not in _ADMIN_ROLES:
         logger.warning(
             f"Admin access denied for user '{current_user.get('username')}' (role={role})"
         )
@@ -117,31 +127,13 @@ def require_dispatch_or_admin(current_user: dict = Depends(get_current_user)) ->
     users must not perform.
     """
     role = current_user.get("role", "")
-    if role not in ("ADMIN", "DISPATCH"):
+    if role not in _OFFICE_ROLES:
         logger.warning(
             f"Dispatch/Admin access denied for user '{current_user.get('username')}' (role={role})"
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Manifest access required",
-        )
-    return current_user
-
-
-def require_driver(current_user: dict = Depends(get_current_user)) -> dict:
-    """
-    Raises 403 unless the caller has DRIVER role.
-
-    Reserved for endpoints that are exclusively for field drivers.
-    """
-    role = current_user.get("role", "")
-    if role not in ("DRIVER",):
-        logger.warning(
-            f"Driver access denied for user '{current_user.get('username')}' (role={role})"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Driver access required",
         )
     return current_user
 
@@ -154,7 +146,7 @@ def require_office(current_user: dict = Depends(get_current_user)) -> dict:
     trails) that field drivers must not access.
     """
     role = current_user.get("role", "")
-    if role not in ("ADMIN", "DISPATCH"):
+    if role not in _OFFICE_ROLES:
         logger.warning(
             f"Office access denied for user '{current_user.get('username')}' (role={role})"
         )
@@ -174,7 +166,7 @@ def require_office_read(current_user: dict = Depends(get_current_user)) -> dict:
     all permitted — only DRIVER is blocked.
     """
     role = current_user.get("role", "")
-    if role == "DRIVER":
+    if role not in _OFFICE_READ_ROLES:
         logger.warning(
             f"Office-read access denied for user '{current_user.get('username')}' (role={role})"
         )
@@ -193,7 +185,7 @@ def require_delivery_access(current_user: dict = Depends(get_current_user)) -> d
     delivery execution workflow.
     """
     role = current_user.get("role", "")
-    if role not in ("DRIVER", "ADMIN", "DISPATCH"):
+    if role not in _DELIVERY_WRITE_ROLES:
         logger.warning(
             f"Delivery access denied for user '{current_user.get('username')}' (role={role})"
         )
@@ -213,7 +205,7 @@ def require_delivery_read(current_user: dict = Depends(get_current_user)) -> dic
     Write endpoints (PUT status, POST PoD) must still use require_delivery_access.
     """
     role = current_user.get("role", "")
-    if role not in ("DRIVER", "ADMIN", "DISPATCH", "REPORTS_ONLY"):
+    if role not in _DELIVERY_READ_ROLES:
         logger.warning(
             f"Delivery read access denied for user '{current_user.get('username')}' (role={role})"
         )

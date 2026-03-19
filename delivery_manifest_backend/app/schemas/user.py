@@ -5,16 +5,19 @@ Pydantic request / response models for user management and authentication.
 """
 
 from typing import Optional
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
-from delivery_manifest_backend.app.core.security import validate_password_strength
+from delivery_manifest_backend.app.core.security import (
+    VALID_ROLES,
+    validate_password_strength,
+)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
     username: str
-    password: str
+    password: str = Field(max_length=128)
 
 
 class LoginResponse(BaseModel):
@@ -25,15 +28,14 @@ class LoginResponse(BaseModel):
 
 
 # ── User CRUD ─────────────────────────────────────────────────────────────────
-
-VALID_ROLES = ("ADMIN", "DISPATCH", "REPORTS_ONLY", "DRIVER")
-
+# VALID_ROLES is the canonical tuple defined in app.core.security — do not
+# redefine it here.
 
 class UserCreate(BaseModel):
     """Payload to register a new user."""
     username:  str
-    password:  str
-    role:      str  = "ADMIN"
+    password:  str  = Field(max_length=128)
+    role:      str  = "REPORTS_ONLY"
     is_active: bool = True
 
     @field_validator("password")
@@ -54,7 +56,7 @@ class UserCreate(BaseModel):
 
 class PasswordReset(BaseModel):
     """Payload to reset a user's password."""
-    password: str
+    password: str = Field(max_length=128)
 
     @field_validator("password")
     @classmethod
