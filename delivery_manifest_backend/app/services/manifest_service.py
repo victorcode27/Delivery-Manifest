@@ -788,6 +788,48 @@ def generate_manifest_number(db, prefix: str = "A") -> str:
 # REPORTS
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _resolve_user_id(db, username: Optional[str]) -> Optional[int]:
+    """
+    Look up a user ID by username from the users table.
+
+    Returns the integer id if exactly one active user with that username
+    exists, or None when the name is blank, not found, or the lookup fails.
+
+    The lookup is unambiguous because usernames carry a UNIQUE constraint.
+    No role filter is applied — driver and assistant accounts both use the
+    DRIVER role, so filtering by role would be redundant and could silently
+    break if roles change in the future.
+
+    The caller owns the db session — this function must not commit or close it.
+    """
+    if not username or not username.strip():
+        return None
+    try:
+        row = execute_query(
+            db,
+            "SELECT id FROM users WHERE username = ? AND is_active = TRUE LIMIT 1",
+            (username.strip(),),
+        ).fetchone()
+        if row:
+            return row[0]
+        # Non-blank name that has no matching active user account — log clearly
+        # so ops can spot unlinked assignments without inspecting the DB directly.
+        logger.warning(
+            f"[save_report] No active user account found for name={username!r}; "
+            "driver_user_id / assistant_user_id will be NULL for this manifest."
+        )
+        return None
+    except Exception:
+        # Real DB failure — distinguish from "not found" at ERROR level.
+        # Still returns None so the manifest save is not aborted.
+        logger.error(
+            f"[save_report] DB error during user ID lookup for name={username!r}; "
+            "assignment FK will be NULL — manifest save continues.",
+            exc_info=True,
+        )
+        return None
+
+
 def save_report(report_data: Dict) -> dict:
     """
     Persist a dispatch report and finalise its staged invoices.
@@ -803,6 +845,14 @@ def save_report(report_data: Dict) -> dict:
     value, etc.) come from the DB.  The report header totals (total_value,
     total_sku, total_weight) are computed from the saved line items; any
     frontend-supplied totalSku / totalWeight / totalValue fields are ignored.
+
+    Assignment user ID resolution (Phase 2):
+        driver_user_id    — prefer explicit value from payload; fall back to
+                            username lookup against the users table.
+        assistant_user_id — same preference/fallback logic.
+        If the fallback lookup finds no matching active user the column is
+        stored as NULL and the text column (driver / assistant) remains the
+        only linkage — Phase 1 access-control already handles that case.
 
     Raises:
         ValueError  – session_id missing, or no staged invoices for this session.
@@ -879,21 +929,36 @@ def save_report(report_data: Dict) -> dict:
         # ── Generate manifest number inside the transaction ──────────────
         manifest_number = generate_manifest_number(db, prefix="A")
 
+        # ── Resolve assignment user IDs (Phase 2) ────────────────────────
+        # Prefer explicit IDs from payload; fall back to username lookup.
+        # NULL is safe — Phase 1 access-control has text-name fallback.
+        driver_name    = report_data.get("driver")
+        assistant_name = report_data.get("assistant")
+
+        driver_uid = report_data.get("driver_user_id")
+        if driver_uid is None:
+            driver_uid = _resolve_user_id(db, driver_name)
+
+        assistant_uid = report_data.get("assistant_user_id")
+        if assistant_uid is None:
+            assistant_uid = _resolve_user_id(db, assistant_name)
+
         result = execute_query(
             db,
             """
             INSERT INTO reports
                 (manifest_number, date, date_dispatched, driver, assistant, checker,
                  reg_number, pallets_brown, pallets_blue, crates, mileage,
-                 total_value, total_sku, total_weight, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 total_value, total_sku, total_weight, created_at,
+                 driver_user_id, assistant_user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 manifest_number,
                 report_data.get("date"),
                 report_data.get("date"),
-                report_data.get("driver"),
-                report_data.get("assistant"),
+                driver_name,
+                assistant_name,
                 report_data.get("checker"),
                 report_data.get("regNumber"),
                 report_data.get("palletsBrown", 0),
@@ -904,6 +969,8 @@ def save_report(report_data: Dict) -> dict:
                 db_total_sku,     # authoritative: sum of report_items.sku
                 db_total_weight,  # authoritative: sum of report_items.weight
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                driver_uid,       # None when no matching active user found
+                assistant_uid,    # None when no matching active user found
             ),
         )
         row = result.fetchone()
@@ -1199,176 +1266,6 @@ def log_manifest_event(
     finally:
         db.close()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SETTINGS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def get_settings(category: str) -> List[str]:
-    db = get_db_session()
-    try:
-        result = execute_query(
-            db,
-            "SELECT value FROM settings WHERE category = ? ORDER BY value",
-            (category,),
-        )
-        return [row._mapping["value"] for row in result.fetchall()]
-    finally:
-        db.close()
-
-
-def add_setting(category: str, value: str) -> bool:
-    db = get_db_session()
-    try:
-        execute_query(
-            db, "INSERT INTO settings (category, value) VALUES (?, ?)", (category, value)
-        )
-        db.commit()
-        return True
-    except IntegrityError:
-        return False
-    finally:
-        db.close()
-
-
-def update_setting(category: str, old_value: str, new_value: str) -> bool:
-    db = get_db_session()
-    try:
-        result = execute_query(
-            db,
-            "UPDATE settings SET value = ? WHERE category = ? AND value = ?",
-            (new_value, category, old_value),
-        )
-        db.commit()
-        return result.rowcount > 0
-    except IntegrityError:
-        return False
-    finally:
-        db.close()
-
-
-def delete_setting(category: str, value: str) -> bool:
-    db = get_db_session()
-    try:
-        result = execute_query(
-            db,
-            "DELETE FROM settings WHERE category = ? AND value = ?",
-            (category, value),
-        )
-        db.commit()
-        return result.rowcount > 0
-    finally:
-        db.close()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TRUCKS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def get_trucks() -> List[Dict]:
-    db = get_db_session()
-    try:
-        result = execute_query(db, "SELECT * FROM trucks ORDER BY reg")
-        return [dict(row._mapping) for row in result.fetchall()]
-    finally:
-        db.close()
-
-
-def add_truck(
-    reg: str,
-    driver: Optional[str] = None,
-    assistant: Optional[str] = None,
-    checker: Optional[str] = None,
-) -> bool:
-    db = get_db_session()
-    try:
-        execute_query(
-            db,
-            "INSERT INTO trucks (reg, driver, assistant, checker) VALUES (?, ?, ?, ?)",
-            (reg, driver, assistant, checker),
-        )
-        db.commit()
-        return True
-    except IntegrityError:
-        return False
-    finally:
-        db.close()
-
-
-def update_truck(
-    reg: str,
-    driver: Optional[str] = None,
-    assistant: Optional[str] = None,
-    checker: Optional[str] = None,
-) -> bool:
-    db = get_db_session()
-    try:
-        result = execute_query(
-            db,
-            "UPDATE trucks SET driver = ?, assistant = ?, checker = ? WHERE reg = ?",
-            (driver, assistant, checker, reg),
-        )
-        db.commit()
-        return result.rowcount > 0
-    finally:
-        db.close()
-
-
-def delete_truck(reg: str) -> bool:
-    db = get_db_session()
-    try:
-        result = execute_query(db, "DELETE FROM trucks WHERE reg = ?", (reg,))
-        db.commit()
-        return result.rowcount > 0
-    finally:
-        db.close()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CUSTOMER ROUTES
-# ══════════════════════════════════════════════════════════════════════════════
-
-def get_customer_routes() -> List[Dict]:
-    db = get_db_session()
-    try:
-        result = execute_query(
-            db,
-            "SELECT customer_name, route_name, delivery_mode "
-            "FROM customer_routes ORDER BY route_name, customer_name",
-        )
-        return [dict(r._mapping) for r in result.fetchall()]
-    finally:
-        db.close()
-
-
-def add_customer_route(customer_name: str, route_name: str, delivery_mode: str = "INTERNAL") -> bool:
-    db = get_db_session()
-    try:
-        execute_query(
-            db,
-            "REPLACE INTO customer_routes (customer_name, route_name, delivery_mode) VALUES (?, ?, ?)",
-            (customer_name, route_name, delivery_mode),
-        )
-        db.commit()
-        return True
-    except IntegrityError:
-        return False
-    finally:
-        db.close()
-
-
-def delete_customer_route(customer_name: str) -> bool:
-    db = get_db_session()
-    try:
-        result = execute_query(
-            db,
-            "DELETE FROM customer_routes WHERE customer_name = ?",
-            (customer_name,),
-        )
-        db.commit()
-        return result.rowcount > 0
-    finally:
-        db.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

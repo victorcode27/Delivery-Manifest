@@ -52,6 +52,7 @@ class DeliveryManifestSummary(BaseModel):
     manifest_number: str
     date_dispatched: Optional[str] = None
     driver:          Optional[str] = None
+    assistant:       Optional[str] = None
     reg_number:      Optional[str] = None
     total_items:     int
     delivery_summary: DeliveryStatusSummary
@@ -84,6 +85,7 @@ class DeliveryManifestItem(BaseModel):
 class DeliveryManifestDetailResponse(BaseModel):
     manifest_number: str
     driver:          Optional[str] = None
+    assistant:       Optional[str] = None
     date_dispatched: Optional[str] = None
     manifest_status: str           # derived, not stored
     items:           List[DeliveryManifestItem]

@@ -1,6 +1,5 @@
 // State
 let orders = [];
-let reports = [];
 let availableInvoices = []; // Invoices loaded from API
 let currentUser = null;
 let currentUserId = null;
@@ -12,7 +11,6 @@ let currentReportView = 'dispatched'; // 'dispatched' or 'outstanding'
 // Role constants
 const ROLE_ADMIN        = 'ADMIN';
 const ROLE_DISPATCH     = 'DISPATCH';
-const ROLE_DRIVER       = 'DRIVER';
 const ROLE_REPORTS_ONLY = 'REPORTS_ONLY';
 
 // API Configuration
@@ -47,15 +45,9 @@ window.onerror = function (msg, url, lineNo, columnNo, error) {
 // Placeholder shown before manifest is finalised.
 const MANIFEST_PLACEHOLDER = 'Assigned on save';
 
-// Truck Fleet Data - Will be loaded from settings
-// Default data (used only for initial setup)
-const DEFAULT_TRUCK_FLEET = [
-    { reg: "AEK0269", driver: "John Doe", assistant: "Jane Smith", checker: "Mike Brown" },
-    { reg: "ABC1234", driver: "Alice Cooper", assistant: "Bob Marley", checker: "Charlie Watts" },
-    { reg: "XYZ9876", driver: "David Gilmour", assistant: "Roger Waters", checker: "Nick Mason" },
-    { reg: "DEF4567", driver: "Freddie Mercury", assistant: "Brian May", checker: "Roger Taylor" },
-    { reg: "GHI7890", driver: "James Hetfield", assistant: "Lars Ulrich", checker: "Kirk Hammett" }
-];
+// Maps username → user id; populated at load time for ADMIN role only.
+// Used to attach assignment IDs to the save-report payload.
+let usernameToIdMap = {};
 
 // Settings Data Structure
 let settingsData = {
@@ -124,6 +116,28 @@ async function loadSettings() {
             renderTrucksList();
         } catch (e) {
             console.warn('[Settings] UI refresh failed:', e);
+        }
+    }
+
+    // ADMIN only: build username → user id map so assignment IDs can be
+    // included in the save-report payload without requiring a separate lookup.
+    // DISPATCH users cannot call GET /api/users; the backend resolves IDs
+    // from text names via username lookup for those sessions.
+    if (currentUserRole === ROLE_ADMIN) {
+        try {
+            const usersRes = await apiFetch(`${API_URL}/users`);
+            if (usersRes.ok) {
+                const usersData = await usersRes.json();
+                usernameToIdMap = {};
+                (usersData.users || []).forEach(u => {
+                    if (u.username && u.id) {
+                        usernameToIdMap[u.username] = u.id;
+                    }
+                });
+                console.log(`[Settings] Loaded ${Object.keys(usernameToIdMap).length} user ID mapping(s) for assignment resolution.`);
+            }
+        } catch (err) {
+            console.warn('[Settings] User ID map load failed (non-fatal):', err.message);
         }
     }
 }
@@ -262,6 +276,8 @@ function initPersonnelDropdowns() {
         const option = document.createElement('option');
         option.value = name;
         option.textContent = name;
+        const uid = usernameToIdMap[name];
+        if (uid) option.dataset.userId = uid;
         if (name === currentDriver) option.selected = true;
         driverSelect.appendChild(option);
     });
@@ -274,6 +290,8 @@ function initPersonnelDropdowns() {
         const option = document.createElement('option');
         option.value = name;
         option.textContent = name;
+        const uid = usernameToIdMap[name];
+        if (uid) option.dataset.userId = uid;
         if (name === currentAssistant) option.selected = true;
         assistantSelect.appendChild(option);
     });
@@ -342,208 +360,6 @@ function setupEventListeners() {
 }
 
 // ... (previous functions) ...
-
-// =============================================
-// MANUAL ENTRY & RESTORE FUNCTIONS
-// =============================================
-
-function openManualEntryModal() {
-    try {
-        const modal = document.getElementById('manual-entry-modal');
-        if (!modal) {
-            alert('Error: Manual Entry Modal not found!');
-            return;
-        }
-        modal.classList.remove('hidden');
-        modal.classList.add('visible');
-        // Default to manual entry tab
-        switchManualModalTab('manual');
-    } catch (e) {
-        console.error(e);
-        alert('Error opening modal: ' + e.message);
-    }
-}
-
-function closeManualEntryModal() {
-    const modal = document.getElementById('manual-entry-modal');
-    modal.classList.remove('visible');
-    modal.classList.add('hidden');
-}
-
-function switchManualModalTab(tab) {
-    const manualBtn = document.getElementById('tab-manual-entry-btn');
-    const restoreBtn = document.getElementById('tab-restore-history-btn');
-    const manualView = document.getElementById('manual-entry-view');
-    const restoreView = document.getElementById('restore-history-view');
-
-    if (tab === 'manual') {
-        manualBtn.classList.add('active');
-        restoreBtn.classList.remove('active');
-        manualView.classList.remove('hidden');
-        restoreView.classList.add('hidden');
-    } else {
-        manualBtn.classList.remove('active');
-        restoreBtn.classList.add('active');
-        manualView.classList.add('hidden');
-        restoreView.classList.remove('hidden');
-        // Focus search box
-        document.getElementById('restore-search-input').focus();
-    }
-}
-
-async function submitManualEntry() {
-    const invoiceNum = document.getElementById('manual-invoice-number').value.trim();
-    const orderNum = document.getElementById('manual-order-number').value.trim();
-    const customer = document.getElementById('manual-customer-name').value.trim();
-    const customerNumber = document.getElementById('manual-customer-number').value.trim();
-    const value = document.getElementById('manual-total-value').value;
-    const area = document.getElementById('manual-area').value.trim();
-
-    if (!invoiceNum || !orderNum || !customer || !value) {
-        alert("Please fill in all required fields marked with *");
-        return;
-    }
-
-    try {
-        const response = await apiFetch(`${API_URL}/invoices/manual`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                invoice_number: invoiceNum,
-                order_number: orderNum,
-                customer_name: customer,
-                customer_number: customerNumber,
-                total_value: value,
-                area: area || "UNKNOWN"
-            })
-        });
-
-        if (response.ok) {
-            alert("Invoice added successfully!");
-            // Clear inputs
-            document.getElementById('manual-invoice-number').value = '';
-            document.getElementById('manual-order-number').value = '';
-            document.getElementById('manual-customer-name').value = '';
-            document.getElementById('manual-customer-number').value = '';
-            document.getElementById('manual-total-value').value = '';
-            document.getElementById('manual-area').value = '';
-
-            // Refresh main list if viewing it
-            closeManualEntryModal();
-            // Optional: trigger reload of invoices in main view if needed
-            // loadSystemInvoices(); 
-        } else {
-            const err = await response.json();
-            alert("Error adding invoice: " + (err.detail || "Unknown error"));
-        }
-    } catch (e) {
-        console.error("Error submitting manual entry:", e);
-        alert("Connection failed. See console for details.");
-    }
-}
-
-let restoreDebounceTimer;
-function searchRestoreHistory(e) {
-    clearTimeout(restoreDebounceTimer);
-    const query = e.target.value.trim();
-
-    if (query.length < 2) {
-        document.getElementById('restore-list').innerHTML = '';
-        return;
-    }
-
-    restoreDebounceTimer = setTimeout(async () => {
-        try {
-            const response = await apiFetch(`${API_URL}/invoices/search?q=${encodeURIComponent(query)}`);
-            const data = await response.json();
-            renderRestoreTable(data.results || []);
-        } catch (e) {
-            console.error("Search failed:", e);
-        }
-    }, 300);
-}
-
-function renderRestoreTable(results) {
-    const list = document.getElementById('restore-list');
-    list.innerHTML = '';
-
-    if (results.length === 0) {
-        list.innerHTML = '<tr><td colspan="5" style="text-align:center;">No matching invoices found</td></tr>';
-        return;
-    }
-
-    results.forEach(item => {
-        const tr = document.createElement('tr');
-        const statusClass = item.is_allocated ? 'text-green-600' : 'text-orange-500';
-        const statusText = item.is_allocated ? 'Dispatched' : 'Pending';
-
-        // Only allow restoring if it IS allocated (dispatched)
-        // If it's already pending, no need to restore, but we show it for clarity
-        const disabledAttr = !item.is_allocated ? 'disabled' : '';
-        const checkboxHtml = item.is_allocated
-            ? `<input type="checkbox" class="restore-checkbox" value="${item.filename}">`
-            : '-';
-
-        tr.innerHTML = `
-            <td>${checkboxHtml}</td>
-            <td>${item.invoice_number}</td>
-            <td>${item.customer_name}</td>
-            <td class="${statusClass}">${statusText}</td>
-            <td>${item.date_processed.split(' ')[0]}</td>
-        `;
-        list.appendChild(tr);
-    });
-
-    // Re-attach checkbox listener for enabling button
-    document.querySelectorAll('.restore-checkbox').forEach(cb => {
-        cb.addEventListener('change', updateRestoreButtonState);
-    });
-}
-
-function updateRestoreButtonState() {
-    const anyChecked = document.querySelectorAll('.restore-checkbox:checked').length > 0;
-    document.getElementById('restore-btn').disabled = !anyChecked;
-}
-
-function toggleSelectAllRestore(e) {
-    const checked = e.target.checked;
-    document.querySelectorAll('.restore-checkbox').forEach(cb => {
-        cb.checked = checked;
-    });
-    updateRestoreButtonState();
-}
-
-async function restoreSelectedInvoices() {
-    const selectedFilenames = Array.from(document.querySelectorAll('.restore-checkbox:checked'))
-        .map(cb => cb.value);
-
-    if (selectedFilenames.length === 0) return;
-
-    if (!confirm(`Are you sure you want to restore ${selectedFilenames.length} invoices to Pending status?`)) return;
-
-    try {
-        const response = await apiFetch(`${API_URL}/invoices/restore`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filenames: selectedFilenames })
-        });
-
-        if (response.ok) {
-            const res = await response.json();
-            alert(res.message);
-            // Clear search results
-            document.getElementById('restore-list').innerHTML = '';
-            document.getElementById('restore-search-input').value = '';
-            document.getElementById('restore-btn').disabled = true;
-            closeManualEntryModal();
-        } else {
-            alert("Failed to restore invoices.");
-        }
-    } catch (e) {
-        console.error("Restore failed:", e);
-        alert("Connection error occurred.");
-    }
-}
 
 function initSecondaryListeners() {
     // Export Options listeners
@@ -619,6 +435,22 @@ function initSecondaryListeners() {
     document.getElementById('login-username').addEventListener('keyup', (e) => {
         if (e.key === 'Enter') document.getElementById('login-password').focus();
     });
+
+    // Invoice modal filter / search listeners
+    const invoiceRouteFilter = document.getElementById('invoice-route-filter');
+    if (invoiceRouteFilter) {
+        invoiceRouteFilter.addEventListener('change', handleInvoiceRouteFilterChange);
+    }
+    const invoiceSearch = document.getElementById('invoice-search');
+    if (invoiceSearch) {
+        invoiceSearch.addEventListener('input', handleInvoiceSearch);
+    }
+    const clearInvoiceSearchBtn = document.getElementById('clear-invoice-search-btn');
+    if (clearInvoiceSearchBtn) {
+        clearInvoiceSearchBtn.addEventListener('click', clearInvoiceSearch);
+    }
+
+    initManualEntryRestoreListeners();
 }
 
 function setDefaultDate() {
@@ -890,22 +722,6 @@ async function saveReport(manifestData) {
 // Reports
 let filteredReportData = []; // Store filtered data for export
 
-function showReports() {
-    const modal = document.getElementById('reports-modal');
-    modal.classList.remove('hidden');
-    modal.classList.add('visible');
-
-    // Set default date range to last 7 days (more useful than just today)
-    const today = new Date();
-    const sevenDaysAgo = new Date(today);
-    sevenDaysAgo.setDate(today.getDate() - 7);
-
-    document.getElementById('report-date-from').valueAsDate = sevenDaysAgo;
-    document.getElementById('report-date-to').valueAsDate = today;
-
-    renderReports();
-}
-
 function hideReports() {
     const modal = document.getElementById('reports-modal');
     modal.classList.remove('visible');
@@ -917,105 +733,8 @@ function hideReports() {
     }
 }
 
-async function renderReports() {
-    const list = document.getElementById('reports-list');
-    list.innerHTML = '';
-
-    const dateFrom = document.getElementById('report-date-from').value;
-    const dateTo = document.getElementById('report-date-to').value;
-    const searchTerm = document.getElementById('report-search').value.trim();
-
-    // Fetch dispatched invoices from new endpoint
-    try {
-        const params = new URLSearchParams();
-        if (dateFrom) params.append('date_from', dateFrom);
-        if (dateTo) params.append('date_to', dateTo);
-        if (searchTerm) params.append('search', searchTerm);
-
-        const url = `${API_URL}/reports/dispatched?${params.toString()}`;
-        console.log("=== FETCHING DISPATCHED REPORTS ===");
-        console.log("URL:", url);
-
-        const response = await apiFetch(url);
-        const data = await response.json();
-
-        console.log("=== DISPATCHED REPORTS DATA ===");
-        console.log("Total invoices:", data.total);
-        console.log("Invoices returned:", data.invoices ? data.invoices.length : 0);
-
-        // Transform to display format
-        filteredReportData = (data.invoices || []).map(inv => ({
-            invoice: inv.invoice_number || 'N/A',
-            orderNumber: inv.order_number || 'N/A',
-            manifest: inv.manifest_number || 'N/A',
-            truckReg: inv.reg_number || 'N/A',
-            customer: inv.customer_name || 'N/A',
-            customerNumber: inv.customer_number || 'N/A',
-            invoiceDate: inv.invoice_date || 'N/A',
-            dateDispatched: inv.date_dispatched || 'N/A',
-            driver: inv.driver || 'N/A',
-            assistant: inv.assistant || 'N/A',
-            checker: inv.checker || 'N/A'
-        }));
-
-    } catch (e) {
-        console.error("Error fetching dispatched reports:", e);
-        list.innerHTML = '<tr><td colspan="11" style="text-align:center;">Error loading reports</td></tr>';
-        return;
-    }
-
-    // Sort by date (newest first)
-    filteredReportData.sort((a, b) => new Date(b.dateDispatched) - new Date(a.dateDispatched));
-
-    // Render rows
-    if (filteredReportData.length === 0) {
-        const message = searchTerm
-            ? 'No invoices match your search criteria.'
-            : 'No dispatched orders found for the selected date range.';
-        list.innerHTML = `<tr><td colspan="11" style="text-align:center; color: #64748b; padding: 2rem;">${message}</td></tr>`;
-    } else {
-        filteredReportData.forEach(row => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td><strong>${row.invoice}</strong></td>
-                <td>${row.orderNumber}</td>
-                <td>${row.manifest}</td>
-                <td>${row.truckReg}</td>
-                <td>${row.customer}</td>
-                <td>${row.customerNumber}</td>
-                <td>${row.invoiceDate}</td>
-                <td>${formatDate(row.dateDispatched)}</td>
-                <td>${row.driver}</td>
-                <td>${row.assistant}</td>
-                <td>${row.checker}</td>
-            `;
-            list.appendChild(tr);
-        });
-    }
-
-    // Update summary
-    const summaryEl = document.getElementById('report-summary');
-    const countEl = document.getElementById('report-count');
-
-    if (filteredReportData.length > 0 && (dateFrom || dateTo)) {
-        summaryEl.classList.remove('hidden');
-        const fromText = dateFrom ? formatDate(dateFrom) : 'Beginning';
-        const toText = dateTo ? formatDate(dateTo) : 'Today';
-        summaryEl.innerHTML = `
-            <span class="report-summary-text">Dispatch Report: ${fromText} to ${toText}</span>
-            <span class="report-summary-count">${filteredReportData.length} invoices</span>
-        `;
-    } else {
-        summaryEl.classList.add('hidden');
-    }
-
-    countEl.textContent = `${filteredReportData.length} invoices found`;
-
-    lucide.createIcons();
-}
-
 function renderManifestView(manifest) {
-    const list = document.getElementById('report-list');
+    const list = document.getElementById('reports-list');
     const summaryEl = document.getElementById('report-summary');
 
     // Update summary with Manifest Details
@@ -1108,98 +827,6 @@ function clearSearch() {
     searchInput.value = '';
     document.getElementById('clear-search-btn').classList.add('hidden');
     renderReports();
-}
-
-// Switch between Dispatched and Outstanding report views
-async function switchReportView(view) {
-    currentReportView = view;
-
-    // Update button active states
-    const dispatchedBtn = document.getElementById('view-dispatched-btn');
-    const outstandingBtn = document.getElementById('view-outstanding-btn');
-
-    if (view === 'dispatched') {
-        dispatchedBtn.classList.add('active');
-        outstandingBtn.classList.remove('active');
-        // Render dispatched reports
-        renderReports();
-    } else {
-        dispatchedBtn.classList.remove('active');
-        outstandingBtn.classList.add('active');
-        // Render outstanding orders
-        await renderOutstandingOrders();
-    }
-}
-
-// Render Outstanding Orders in the modal
-async function renderOutstandingOrders() {
-    const list = document.getElementById('reports-list');
-    list.innerHTML = '';
-
-    try {
-        const response = await apiFetch(`${API_URL}/reports/outstanding`);
-        const data = await response.json();
-
-        console.log("=== OUTSTANDING ORDERS DATA ===");
-        console.log("Total orders:", data.count);
-
-        // Transform to display format
-        filteredReportData = (data.orders || []).map(order => ({
-            invoice: order.invoice_number || 'N/A',
-            orderNumber: order.order_number || 'N/A',
-            manifest: 'Not Dispatched',
-            truckReg: 'N/A',
-            customer: order.customer_name || 'N/A',
-            customerNumber: order.customer_number || 'N/A',
-            invoiceDate: order.invoice_date || 'N/A',
-            dateDispatched: 'N/A',
-            driver: 'N/A',
-            assistant: 'N/A',
-            checker: 'N/A'
-        }));
-
-    } catch (e) {
-        console.error("Error fetching outstanding orders:", e);
-        list.innerHTML = '<tr><td colspan="11" style="text-align:center;">Error loading outstanding orders</td></tr>';
-        return;
-    }
-
-    // Render rows
-    if (filteredReportData.length === 0) {
-        list.innerHTML = '<tr><td colspan="11" style="text-align:center; color: #64748b; padding: 2rem;">No outstanding orders found.</td></tr>';
-    } else {
-        filteredReportData.forEach(row => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td><strong>${row.invoice}</strong></td>
-                <td>${row.orderNumber}</td>
-                <td>${row.manifest}</td>
-                <td>${row.truckReg}</td>
-                <td>${row.customer}</td>
-                <td>${row.customerNumber}</td>
-                <td>${row.invoiceDate}</td>
-                <td>${row.dateDispatched}</td>
-                <td>${row.driver}</td>
-                <td>${row.assistant}</td>
-                <td>${row.checker}</td>
-            `;
-            list.appendChild(tr);
-        });
-    }
-
-    // Update summary
-    const summaryEl = document.getElementById('report-summary');
-    const countEl = document.getElementById('report-count');
-
-    summaryEl.classList.remove('hidden');
-    summaryEl.innerHTML = `
-        <span class="report-summary-text">Outstanding Orders</span>
-        <span class="report-summary-count">${filteredReportData.length} orders</span>
-    `;
-
-    countEl.textContent = `${filteredReportData.length} orders found`;
-
-    lucide.createIcons();
 }
 
 // Export Dispatch Report to Excel
@@ -1373,12 +1000,22 @@ async function confirmAndPrint() {
     try {
 
     // ── Step 2: Save report to backend — this generates the manifest number ─
+    // Read assignment IDs from the data-user-id attribute set by
+    // initPersonnelDropdowns() when the ADMIN user map is available.
+    // Falls back to null for DISPATCH users — backend resolves by username.
+    const driverOption    = formInputs.driver.options[formInputs.driver.selectedIndex];
+    const assistantOption = formInputs.assistant.options[formInputs.assistant.selectedIndex];
+    const driverUserId    = driverOption?.dataset?.userId    ? Number(driverOption.dataset.userId)    : null;
+    const assistantUserId = assistantOption?.dataset?.userId ? Number(assistantOption.dataset.userId) : null;
+
     const reportResult = await saveReport({
         date: formInputs.date.value,
         regNumber: formInputs.regNumber.value,
         driver: formInputs.driver.value,
         assistant: formInputs.assistant.value,
         checker: formInputs.checker.value,
+        driver_user_id: driverUserId,
+        assistant_user_id: assistantUserId,
         palletsBrown: parseInt(formInputs.palletsBrown.value) || 0,
         palletsBlue: parseInt(formInputs.palletsBlue.value) || 0,
         crates: parseInt(formInputs.crates.value) || 0,
@@ -1532,17 +1169,6 @@ async function uploadManifest(blob, filename) {
     }
 }
 
-// Helper function to convert ArrayBuffer to Base64
-function arrayBufferToBase64(buffer) {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    return window.btoa(binary);
-}
-
 function formatDate(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
@@ -1573,16 +1199,6 @@ async function fetchInvoices(area = null) {
         alert('Could not load invoices. Make sure the API server is running (python api_server.py)');
         return [];
     }
-}
-
-function openInvoiceModal() {
-    const selectedArea = null;
-    document.getElementById('invoice-area-label').textContent = 'Area: All';
-
-    const modal = document.getElementById('invoice-modal');
-    modal.classList.remove('hidden');
-    modal.classList.add('visible');
-    loadInvoicesIntoModal(selectedArea);
 }
 
 function closeInvoiceModal() {
@@ -1947,9 +1563,7 @@ function clearInvoiceSearch() {
 // UPDATED REPORT FILTERING WITH ROUTE
 // =============================================
 
-// Modified renderReports to include route filtering
-// Modified renderReports to include route filtering AND FETCHING from API
-async function renderReportsWithRouteFilter() {
+async function renderReports() {
     const list = document.getElementById('reports-list');
     list.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 2rem;">Loading reports...</td></tr>';
 
@@ -2071,12 +1685,8 @@ async function renderReportsWithRouteFilter() {
     lucide.createIcons();
 }
 
-// Override original renderReports
-const originalRenderReports = renderReports;
-renderReports = renderReportsWithRouteFilter;
-
-// Filter function wired to filter-btn; defined here because it depends on renderReportsWithRouteFilter above.
-filterReports = async function () {
+// Filter function wired to filter-btn.
+async function filterReports() {
     const btn = document.getElementById('filter-btn');
     const originalContent = btn.innerHTML;
 
@@ -2092,7 +1702,7 @@ filterReports = async function () {
         if (currentReportView === 'outstanding') {
             await renderOutstandingOrders();
         } else {
-            renderReportsWithRouteFilter();
+            renderReports();
         }
     } catch (error) {
         console.error('Error generating report:', error);
@@ -2102,42 +1712,11 @@ filterReports = async function () {
         btn.innerHTML = originalContent;
         lucide.createIcons();
     }
-};
+}
 
 
-// =============================================
-// ADDITIONAL EVENT LISTENERS
-// =============================================
 
-// Add event listeners for new functionality when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    // Invoice route filter
-    const invoiceRouteFilter = document.getElementById('invoice-route-filter');
-    if (invoiceRouteFilter) {
-        invoiceRouteFilter.addEventListener('change', handleInvoiceRouteFilterChange);
-    }
-
-    // Report route filter (triggers on Generate Report button click)
-    // Already handled by existing filter-btn click handler
-
-    // Invoice search filter
-    const invoiceSearch = document.getElementById('invoice-search');
-    if (invoiceSearch) {
-        invoiceSearch.addEventListener('input', handleInvoiceSearch);
-    }
-
-    const clearInvoiceSearchBtn = document.getElementById('clear-invoice-search-btn');
-    if (clearInvoiceSearchBtn) {
-        clearInvoiceSearchBtn.addEventListener('click', clearInvoiceSearch);
-    }
-
-    // Populate route filter dropdowns on load
-    populateRouteFilterDropdowns();
-});
-
-// Update openInvoiceModal to populate route filter and use filtered function
-const originalOpenInvoiceModal = openInvoiceModal;
-openInvoiceModal = function () {
+function openInvoiceModal() {
     const selectedArea = null;
     document.getElementById('invoice-area-label').textContent = 'Area: All';
 
@@ -2154,11 +1733,9 @@ openInvoiceModal = function () {
     modal.classList.remove('hidden');
     modal.classList.add('visible');
     loadInvoicesIntoModalFiltered(selectedArea, null);
-};
+}
 
-// Update showReports to populate route filter
-const originalShowReports = showReports;
-showReports = function () {
+function showReports() {
     const modal = document.getElementById('reports-modal');
     modal.classList.remove('hidden');
     modal.classList.add('visible');
@@ -2179,8 +1756,8 @@ showReports = function () {
         routeFilter.value = '';
     }
 
-    renderReportsWithRouteFilter();
-};
+    renderReports();
+}
 
 // Global state to track current view
 let currentPrintableData = [];
@@ -2696,41 +2273,3 @@ function renderReportPrintPreview() {
     container.innerHTML = html;
 }
 
-// =============================================
-// DATE INPUT ENHANCEMENTS
-// =============================================
-function setDateToToday() {
-    const dateInput = document.getElementById('date');
-    if (dateInput) {
-        // Only set if empty or forcing reset logic
-        // But user wants it to specificially default to current date.
-        // So checking empty is good for load, but for reset we might want to force it.
-        // The reset listener below handles the force reset.
-        if (!dateInput.value) {
-            const today = new Date().toISOString().split('T')[0];
-            dateInput.value = today;
-        }
-    }
-}
-
-function forceDateToToday() {
-    const dateInput = document.getElementById('date');
-    if (dateInput) {
-        const today = new Date().toISOString().split('T')[0];
-        dateInput.value = today;
-    }
-}
-
-// Initialize on load
-document.addEventListener('DOMContentLoaded', setDateToToday);
-// Just in case DOMContentLoaded already fired or script runs late
-setDateToToday();
-
-// Ensure reset button also triggers date reset
-const resetBtnRef = document.getElementById('reset-btn');
-if (resetBtnRef) {
-    resetBtnRef.addEventListener('click', () => {
-        // Slight delay to ensure it overrides any clearing done by original reset
-        setTimeout(forceDateToToday, 100);
-    });
-}

@@ -34,6 +34,7 @@ from delivery_manifest_backend.app.core.constants import DELIVERY_EVENT_POD_UPLO
 from delivery_manifest_backend.app.core.deps import get_current_user, require_delivery_access, require_delivery_read, require_dispatch_or_admin
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.db.database import _is_sqlite, get_db
+from delivery_manifest_backend.app.services import delivery_service
 from delivery_manifest_backend.app.schemas.delivery import (
     ALLOWED_TRANSITIONS,
     BulkConfirmResponse,
@@ -87,72 +88,6 @@ def get_delivery_meta(current_user: dict = Depends(get_current_user)):
     }
 
 
-# ── Private helpers ────────────────────────────────────────────────────────────
-
-def _derive_manifest_status(statuses: list) -> str:
-    """
-    Derive a manifest-level summary status from the list of per-invoice delivery statuses.
-
-    Rules (evaluated in order):
-      1. Empty list OR all PENDING                                 → PENDING
-      2. All DELIVERED or RETURNED                                 → COMPLETED
-      3. All resolved (no PENDING/IN_TRANSIT) + any FAILED/PARTIAL → COMPLETED_WITH_ISSUES
-      4. Anything else                                             → IN_PROGRESS
-    """
-    if not statuses or all(s == "PENDING" for s in statuses):
-        return "PENDING"
-    if all(s in ("DELIVERED", "RETURNED") for s in statuses):
-        return "COMPLETED"
-    if all(s in ("DELIVERED", "RETURNED", "FAILED", "PARTIAL") for s in statuses):
-        return "COMPLETED_WITH_ISSUES"
-    return "IN_PROGRESS"
-
-
-def _is_manifest_assigned_to_driver(
-    db: Session, manifest_number: str, user: dict
-) -> bool:
-    """
-    Return True if the manifest is assigned to the given DRIVER user.
-
-    Checks both the FK (driver_user_id) and the legacy text column (driver)
-    so the feature works before drivers are formally linked to accounts.
-    """
-    result = db.execute(
-        text("""
-            SELECT 1
-            FROM   reports
-            WHERE  manifest_number = :mn
-              AND  (driver_user_id = :uid OR driver = :uname)
-            LIMIT  1
-        """),
-        {"mn": manifest_number, "uid": user["id"], "uname": user["username"]},
-    )
-    return result.fetchone() is not None
-
-
-def _validate_transition(current_status: str, next_status: str) -> None:
-    """
-    Raise HTTP 422 if current_status -> next_status is not permitted by the
-    canonical ALLOWED_TRANSITIONS map defined in schemas.delivery.
-
-    Called before every status UPSERT to enforce the backend state machine.
-    The frontend may mirror these rules for UX, but this check is authoritative.
-    """
-    allowed = ALLOWED_TRANSITIONS.get(current_status, frozenset())
-    if next_status not in allowed:
-        if not allowed:
-            detail = (
-                f"Cannot update delivery status: '{current_status}' is a terminal "
-                f"status and accepts no further transitions."
-            )
-        else:
-            detail = (
-                f"Invalid delivery status transition: '{current_status}' -> '{next_status}'. "
-                f"Allowed next statuses from '{current_status}': "
-                f"{', '.join(sorted(allowed))}."
-            )
-        raise HTTPException(status_code=422, detail=detail)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GET /api/delivery/manifests
@@ -182,7 +117,10 @@ def list_manifests(
     params:     dict = {}
 
     if role == "DRIVER":
-        conditions.append("(r.driver_user_id = :uid OR r.driver = :uname)")
+        conditions.append(
+            "(r.driver_user_id = :uid OR r.driver = :uname"
+            " OR r.assistant_user_id = :uid OR r.assistant = :uname)"
+        )
         params["uid"]   = current_user["id"]
         params["uname"] = current_user["username"]
 
@@ -201,6 +139,7 @@ def list_manifests(
             r.manifest_number,
             r.date_dispatched,
             r.driver,
+            r.assistant,
             r.reg_number,
             COUNT(ri.id)                                                            AS total_items,
             SUM(CASE WHEN COALESCE(du.status, 'PENDING') = 'DELIVERED'  THEN 1 ELSE 0 END) AS delivered,
@@ -213,7 +152,7 @@ def list_manifests(
         LEFT JOIN report_items    ri ON ri.report_id     = r.id
         LEFT JOIN delivery_updates du ON du.report_item_id = ri.id
         {where_sql}
-        GROUP BY r.manifest_number, r.date_dispatched, r.driver, r.reg_number
+        GROUP BY r.manifest_number, r.date_dispatched, r.driver, r.assistant, r.reg_number
         ORDER BY r.date_dispatched DESC NULLS LAST
     """)
 
@@ -236,7 +175,7 @@ def list_manifests(
             ["IN_TRANSIT"] * (row.in_transit or 0)
         )
         summary = DeliveryStatusSummary(
-            status     = _derive_manifest_status(statuses),
+            status     = delivery_service.derive_manifest_status(statuses),
             delivered  = row.delivered  or 0,
             pending    = row.pending    or 0,
             failed     = row.failed     or 0,
@@ -248,6 +187,7 @@ def list_manifests(
             manifest_number  = row.manifest_number,
             date_dispatched  = row.date_dispatched,
             driver           = row.driver,
+            assistant        = row.assistant,
             reg_number       = row.reg_number,
             total_items      = row.total_items or 0,
             delivery_summary = summary,
@@ -280,7 +220,7 @@ def get_manifest_detail(
     """
     role = current_user.get("role")
 
-    if role == "DRIVER" and not _is_manifest_assigned_to_driver(
+    if role == "DRIVER" and not delivery_service.is_manifest_assigned_to_driver(
         db, manifest_number, current_user
     ):
         raise HTTPException(
@@ -291,7 +231,7 @@ def get_manifest_detail(
     # Manifest header
     header = db.execute(
         text("""
-            SELECT manifest_number, date_dispatched, driver
+            SELECT manifest_number, date_dispatched, driver, assistant
             FROM   reports
             WHERE  manifest_number = :mn
             LIMIT  1
@@ -357,8 +297,9 @@ def get_manifest_detail(
     return DeliveryManifestDetailResponse(
         manifest_number = header.manifest_number,
         driver          = header.driver,
+        assistant       = header.assistant,
         date_dispatched = header.date_dispatched,
-        manifest_status = _derive_manifest_status(statuses),
+        manifest_status = delivery_service.derive_manifest_status(statuses),
         items           = items,
     )
 
@@ -366,13 +307,6 @@ def get_manifest_detail(
 # ══════════════════════════════════════════════════════════════════════════════
 # POST /api/delivery/manifests/{manifest_number}/bulk-confirm
 # ══════════════════════════════════════════════════════════════════════════════
-
-# Statuses from which a transition to DELIVERED is valid under the canonical state machine.
-# Derived from ALLOWED_TRANSITIONS so this stays in sync automatically.
-# Under current rules this resolves to: frozenset({"IN_TRANSIT"})
-_BULK_CONFIRMABLE = frozenset(
-    s for s, allowed in ALLOWED_TRANSITIONS.items() if "DELIVERED" in allowed
-)
 
 
 @router.post("/manifests/{manifest_number}/bulk-confirm", response_model=BulkConfirmResponse)
@@ -420,7 +354,7 @@ def bulk_confirm_manifest(
         {"mn": manifest_number},
     ).fetchall()
 
-    unresolved = [row for row in all_items if row.current_status in _BULK_CONFIRMABLE]
+    unresolved = [row for row in all_items if row.current_status in delivery_service.BULK_CONFIRMABLE]
     skipped    = len(all_items) - len(unresolved)
 
     if not unresolved:
@@ -540,31 +474,11 @@ def update_delivery_status(
     """
     role = current_user.get("role")
 
-    # Resolve report_item → manifest header in one query
-    item_row = db.execute(
-        text("""
-            SELECT ri.id, ri.invoice_number, r.manifest_number, r.driver, r.driver_user_id
-            FROM   report_items ri
-            JOIN   reports       r ON r.id = ri.report_id
-            WHERE  ri.id = :id
-        """),
-        {"id": report_item_id},
-    ).fetchone()
+    # Resolve report_item → manifest header; 404 if not found
+    item_row = delivery_service.fetch_report_item(db, report_item_id)
 
-    if not item_row:
-        raise HTTPException(status_code=404, detail="Report item not found")
-
-    # DRIVER access check
-    if role == "DRIVER":
-        assigned = (
-            item_row.driver_user_id == current_user["id"]
-            or item_row.driver == current_user["username"]
-        )
-        if not assigned:
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: item not in your manifest",
-            )
+    # DRIVER access check; 403 if item not in their manifest
+    delivery_service.assert_driver_item_access(item_row, current_user)
 
     # Determine driver fields to store.
     # DRIVER: writes their own ID + username.
@@ -598,7 +512,7 @@ def update_delivery_status(
     current_status = existing_du.status if existing_du else "PENDING"
 
     # Enforce canonical state machine — raises HTTP 422 on invalid transition.
-    _validate_transition(current_status, body.status)
+    delivery_service.validate_transition(current_status, body.status)
 
     try:
         # UPSERT — ON CONFLICT on the UNIQUE constraint of report_item_id.
@@ -719,31 +633,11 @@ async def upload_pod(
     """
     role = current_user.get("role")
 
-    # Resolve report_item → manifest header
-    item_row = db.execute(
-        text("""
-            SELECT ri.id, ri.invoice_number, r.manifest_number, r.driver, r.driver_user_id
-            FROM   report_items ri
-            JOIN   reports       r ON r.id = ri.report_id
-            WHERE  ri.id = :id
-        """),
-        {"id": report_item_id},
-    ).fetchone()
+    # Resolve report_item → manifest header; 404 if not found
+    item_row = delivery_service.fetch_report_item(db, report_item_id)
 
-    if not item_row:
-        raise HTTPException(status_code=404, detail="Report item not found")
-
-    # DRIVER access check — same logic as PUT status endpoint
-    if role == "DRIVER":
-        assigned = (
-            item_row.driver_user_id == current_user["id"]
-            or item_row.driver == current_user["username"]
-        )
-        if not assigned:
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: item not in your manifest",
-            )
+    # DRIVER access check; 403 if item not in their manifest
+    delivery_service.assert_driver_item_access(item_row, current_user)
 
     # Read header bytes first (needed for type detection without loading whole file)
     header = await pod_file.read(8)
@@ -933,7 +827,7 @@ def serve_pod_file(
         if len(parts) < 3 or parts[0] != "pods":
             raise HTTPException(status_code=403, detail="Access denied")
         manifest_number = parts[1]
-        if not _is_manifest_assigned_to_driver(db, manifest_number, current_user):
+        if not delivery_service.is_manifest_assigned_to_driver(db, manifest_number, current_user):
             raise HTTPException(status_code=403, detail="Access denied: file not from your manifest")
 
     uploads_root = os.path.realpath(settings.UPLOADS_ROOT)
