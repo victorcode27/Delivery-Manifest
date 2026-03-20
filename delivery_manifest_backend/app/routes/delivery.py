@@ -34,7 +34,7 @@ from delivery_manifest_backend.app.core.constants import DELIVERY_EVENT_POD_UPLO
 from delivery_manifest_backend.app.core.deps import get_current_user, require_delivery_access, require_delivery_read, require_dispatch_or_admin
 from delivery_manifest_backend.app.core.logger import get_logger
 from delivery_manifest_backend.app.db.database import _is_sqlite, get_db
-from delivery_manifest_backend.app.services import delivery_service
+import delivery_manifest_backend.app.services.delivery_service as delivery_service
 from delivery_manifest_backend.app.schemas.delivery import (
     ALLOWED_TRANSITIONS,
     BulkConfirmResponse,
