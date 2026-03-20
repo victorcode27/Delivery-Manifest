@@ -840,7 +840,7 @@ async function renderUsersList() {
                                    user.role === ROLE_DRIVER       ? 'driver'       : 'reports-only';
             const roleBadgeText  = user.role === ROLE_ADMIN        ? 'Admin'        :
                                    user.role === ROLE_DISPATCH     ? 'Dispatch'     :
-                                   user.role === ROLE_DRIVER       ? 'Driver'       : 'Reports Only';
+                                   user.role === ROLE_DRIVER       ? 'Delivery Operator' : 'Reports Only';
 
             const statusClass = user.is_active ? 'active'   : 'inactive';
             const statusText  = user.is_active ? 'Active'   : 'Inactive';
@@ -859,7 +859,7 @@ async function renderUsersList() {
                             <option value="ADMIN"        ${user.role === 'ADMIN'        ? 'selected' : ''}>Admin</option>
                             <option value="DISPATCH"     ${user.role === 'DISPATCH'     ? 'selected' : ''}>Dispatch</option>
                             <option value="REPORTS_ONLY" ${user.role === 'REPORTS_ONLY' ? 'selected' : ''}>Reports Only</option>
-                            <option value="DRIVER"       ${user.role === 'DRIVER'       ? 'selected' : ''}>Driver</option>
+                            <option value="DRIVER"       ${user.role === 'DRIVER'       ? 'selected' : ''}>Delivery Operator (Driver/Assistant)</option>
                         </select>
                         <label class="toggle-switch" title="${user.is_active ? 'Deactivate' : 'Activate'} user">
                             <input type="checkbox" ${user.is_active ? 'checked' : ''} onchange="handleStatusToggle(${user.id}, this.checked)">
