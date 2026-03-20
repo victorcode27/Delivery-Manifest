@@ -81,6 +81,15 @@ async def on_shutdown() -> None:
     logger.info("Delivery Manifest API shut down.")
 
 
+# ── Root / health ─────────────────────────────────────────────────────────────
+# Explicit GET + HEAD for "/" so health checkers get 200, not 405.
+
+@app.get("/")
+@app.head("/")
+async def root():
+    return {"status": "ok"}
+
+
 # ── Static frontend ───────────────────────────────────────────────────────────
 # GET-only catch-all so POST/PUT/DELETE to /api/* are never intercepted.
 #

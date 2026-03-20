@@ -53,6 +53,7 @@ from delivery_manifest_backend.app.schemas.manifest import (
     TruckRequest,
 )
 from delivery_manifest_backend.app.services import manifest_service
+from delivery_manifest_backend.app.services import settings_service
 
 router = APIRouter(tags=["manifests"])
 logger = get_logger(__name__)
@@ -496,7 +497,7 @@ def get_outstanding_invoices(
 @router.get("/settings/{category}")
 def get_settings(category: str, current_user: dict = Depends(require_office_read)):
     try:
-        return {"category": category, "values": manifest_service.get_settings(category)}
+        return {"category": category, "values": settings_service.get_settings(category)}
     except Exception:
         logger.error("Error fetching settings", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -508,7 +509,7 @@ def add_setting(
     current_user: dict = Depends(require_admin),
 ):
     try:
-        ok = manifest_service.add_setting(request.category, request.value)
+        ok = settings_service.add_setting(request.category, request.value)
         if not ok:
             raise HTTPException(status_code=400, detail="Value already exists")
         return {"message": f"Added '{request.value}' to {request.category}"}
@@ -525,7 +526,7 @@ def update_setting(
     current_user: dict = Depends(require_admin),
 ):
     try:
-        ok = manifest_service.update_setting(request.category, request.old_value, request.new_value)
+        ok = settings_service.update_setting(request.category, request.old_value, request.new_value)
         if not ok:
             raise HTTPException(status_code=404, detail="Setting not found")
         return {"message": f"Updated '{request.old_value}' to '{request.new_value}'"}
@@ -543,7 +544,7 @@ def delete_setting(
     current_user: dict = Depends(require_admin),
 ):
     try:
-        ok = manifest_service.delete_setting(category, value)
+        ok = settings_service.delete_setting(category, value)
         if not ok:
             raise HTTPException(status_code=404, detail="Setting not found")
         return {"message": f"Deleted '{value}' from {category}"}
@@ -561,7 +562,7 @@ def delete_setting(
 @router.get("/trucks")
 def get_trucks(current_user: dict = Depends(require_office_read)):
     try:
-        return {"trucks": manifest_service.get_trucks()}
+        return {"trucks": settings_service.get_trucks()}
     except Exception:
         logger.error("Error fetching trucks", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -573,7 +574,7 @@ def add_truck(
     current_user: dict = Depends(require_admin),
 ):
     try:
-        ok = manifest_service.add_truck(request.reg, request.driver, request.assistant, request.checker)
+        ok = settings_service.add_truck(request.reg, request.driver, request.assistant, request.checker)
         if not ok:
             raise HTTPException(status_code=400, detail="Truck registration already exists")
         return {"message": f"Added truck '{request.reg}'"}
@@ -591,7 +592,7 @@ def update_truck(
     current_user: dict = Depends(require_admin),
 ):
     try:
-        ok = manifest_service.update_truck(reg, request.driver, request.assistant, request.checker)
+        ok = settings_service.update_truck(reg, request.driver, request.assistant, request.checker)
         if not ok:
             raise HTTPException(status_code=404, detail="Truck not found")
         return {"message": f"Updated truck '{reg}'"}
@@ -608,7 +609,7 @@ def delete_truck(
     current_user: dict = Depends(require_admin),
 ):
     try:
-        ok = manifest_service.delete_truck(reg)
+        ok = settings_service.delete_truck(reg)
         if not ok:
             raise HTTPException(status_code=404, detail="Truck not found")
         return {"message": f"Deleted truck '{reg}'"}
@@ -626,7 +627,7 @@ def delete_truck(
 @router.get("/customer-routes")
 def get_customer_routes(current_user: dict = Depends(require_office_read)):
     try:
-        return {"routes": manifest_service.get_customer_routes()}
+        return {"routes": settings_service.get_customer_routes()}
     except Exception:
         logger.error("Error fetching customer routes", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -638,7 +639,7 @@ def add_customer_route(
     current_user: dict = Depends(require_admin),
 ):
     try:
-        ok = manifest_service.add_customer_route(request.customer_name, request.route_name, request.delivery_mode)
+        ok = settings_service.add_customer_route(request.customer_name, request.route_name, request.delivery_mode)
         if not ok:
             raise HTTPException(status_code=400, detail="Failed to save mapping")
         return {"message": f"Assigned '{request.customer_name}' to '{request.route_name}' ({request.delivery_mode})"}
@@ -655,7 +656,7 @@ def delete_customer_route(
     current_user: dict = Depends(require_admin),
 ):
     try:
-        ok = manifest_service.delete_customer_route(customer_name)
+        ok = settings_service.delete_customer_route(customer_name)
         if not ok:
             raise HTTPException(status_code=404, detail="Mapping not found")
         return {"message": f"Deleted route for '{customer_name}'"}
