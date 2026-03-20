@@ -13,7 +13,7 @@ import time
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from delivery_manifest_backend.app.core.config import settings
 from delivery_manifest_backend.app.core.logger import get_logger
@@ -81,13 +81,19 @@ async def on_shutdown() -> None:
     logger.info("Delivery Manifest API shut down.")
 
 
-# ── Root / health ─────────────────────────────────────────────────────────────
-# Explicit GET + HEAD for "/" so health checkers get 200, not 405.
+# ── Health / HEAD ─────────────────────────────────────────────────────────────
+# /health  — dedicated endpoint for Render health checks and diagnostics.
+# HEAD /   — explicit 200 so load balancers don't get 405; no body returned.
+# GET /    — falls through to the SPA catch-all below (serves index.html).
 
-@app.get("/")
-@app.head("/")
-async def root():
+@app.get("/health")
+async def health():
     return {"status": "ok"}
+
+
+@app.head("/")
+async def head_root():
+    return Response(status_code=200)
 
 
 # ── Static frontend ───────────────────────────────────────────────────────────
