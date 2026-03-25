@@ -89,12 +89,14 @@ class ReportInvoiceItem(BaseModel):
 
 class ReportRequest(BaseModel):
     """Full payload to save a dispatch report."""
-    manifestNumber: Optional[str] = None  # Ignored — backend generates manifest numbers
-    date:           str
-    driver:         Optional[str]   = None
-    assistant:      Optional[str]   = None
-    checker:        Optional[str]   = None
-    regNumber:      Optional[str]   = None
+    manifestNumber:    Optional[str] = None  # Ignored — backend generates manifest numbers
+    date:              str
+    driver:            Optional[str] = None
+    assistant:         Optional[str] = None
+    checker:           Optional[str] = None
+    regNumber:         Optional[str] = None
+    driver_user_id:    Optional[int] = None  # If provided, written directly; else backend resolves from driver name
+    assistant_user_id: Optional[int] = None  # If provided, written directly; else backend resolves from assistant name
     palletsBrown:   int             = 0
     palletsBlue:    int             = 0
     crates:         int             = 0

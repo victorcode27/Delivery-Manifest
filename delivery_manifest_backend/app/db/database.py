@@ -423,6 +423,9 @@ def _run_migrations(db) -> None:
         # Delivery tracking v1 — link a driver account to a dispatched report
         ("reports", "driver_user_id",
          "ALTER TABLE reports ADD COLUMN driver_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+        # Delivery tracking v2 — link an assistant account to a dispatched report
+        ("reports", "assistant_user_id",
+         "ALTER TABLE reports ADD COLUMN assistant_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"),
         # Customer routes v2 — delivery mode flag (INTERNAL | THIRD_PARTY)
         ("customer_routes", "delivery_mode",
          "ALTER TABLE customer_routes ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'INTERNAL'"),
@@ -545,6 +548,9 @@ def _create_indexes(db, *, skip_unique_invoice: bool = False) -> None:
         # report_items.invoice_number — NOT EXISTS outstanding query + LIKE search
         ("idx_report_items_invoice_number",
          "CREATE INDEX IF NOT EXISTS idx_report_items_invoice_number ON report_items(invoice_number)"),
+        # report_items.area — analytics: area/route grouping in overview and exceptions
+        ("idx_report_items_area",
+         "CREATE INDEX IF NOT EXISTS idx_report_items_area           ON report_items(area)"),
         # reports.manifest_number — primary lookup key for manifest details
         # Also enforced as UNIQUE to match production PostgreSQL constraint
         ("idx_reports_manifest_number_unique",
@@ -563,16 +569,37 @@ def _create_indexes(db, *, skip_unique_invoice: bool = False) -> None:
          "CREATE INDEX IF NOT EXISTS idx_reports_driver_user_id ON reports(driver_user_id)"),
         ("idx_reports_driver",
          "CREATE INDEX IF NOT EXISTS idx_reports_driver ON reports(driver)"),
+        # reports — assistant assignment lookup used by DRIVER role filter (Phase 1)
+        ("idx_reports_assistant_user_id",
+         "CREATE INDEX IF NOT EXISTS idx_reports_assistant_user_id ON reports(assistant_user_id)"),
+        ("idx_reports_assistant",
+         "CREATE INDEX IF NOT EXISTS idx_reports_assistant ON reports(assistant)"),
         # delivery_updates — manifest filter and driver filter
         ("idx_du_manifest",
          "CREATE INDEX IF NOT EXISTS idx_du_manifest ON delivery_updates(manifest_number)"),
         ("idx_du_driver",
          "CREATE INDEX IF NOT EXISTS idx_du_driver ON delivery_updates(driver_user_id)"),
+        # delivery_updates — analytics: status breakdown (exceptions, overview, aging)
+        ("idx_du_status",
+         "CREATE INDEX IF NOT EXISTS idx_du_status         ON delivery_updates(status)"),
+        # delivery_updates — analytics: invoice-level joins and lookups
+        ("idx_du_invoice_number",
+         "CREATE INDEX IF NOT EXISTS idx_du_invoice_number ON delivery_updates(invoice_number)"),
         # delivery_events — join and manifest filter
         ("idx_de_update",
          "CREATE INDEX IF NOT EXISTS idx_de_update ON delivery_events(delivery_update_id)"),
         ("idx_de_manifest",
          "CREATE INDEX IF NOT EXISTS idx_de_manifest ON delivery_events(manifest_number)"),
+        # delivery_events — Phase 2 analytics: activity/trends sort + filter
+        ("idx_de_event_at",
+         "CREATE INDEX IF NOT EXISTS idx_de_event_at    ON delivery_events(event_at)"),
+        ("idx_de_changed_by",
+         "CREATE INDEX IF NOT EXISTS idx_de_changed_by  ON delivery_events(changed_by_user_id)"),
+        ("idx_de_event_type",
+         "CREATE INDEX IF NOT EXISTS idx_de_event_type  ON delivery_events(event_type)"),
+        # customer_routes — Phase 2 analytics: route leaderboard GROUP BY
+        ("idx_cr_route_name",
+         "CREATE INDEX IF NOT EXISTS idx_cr_route_name  ON customer_routes(route_name)"),
     ]
 
     for name, ddl in indexes:

@@ -25,6 +25,26 @@ BULK_CONFIRMABLE = frozenset(
     s for s, allowed in ALLOWED_TRANSITIONS.items() if "DELIVERED" in allowed
 )
 
+# ── Analytics: canonical driver identity grouping rule ────────────────────────
+#
+# When grouping or attributing deliveries by driver in analytics queries, apply
+# this precedence to avoid double-counting and handle legacy text-only records:
+#
+#   1. PRIMARY:  reports.driver_user_id  (FK to users.id — preferred, exact match)
+#   2. FALLBACK: reports.driver          (TEXT — used when driver_user_id IS NULL)
+#   3. UNKNOWN:  label as "Unassigned"   (when both driver_user_id IS NULL
+#                                         AND driver IS NULL / blank / 'N/A')
+#
+# Do NOT use delivery_updates.driver_user_id as the grouping key for analytics.
+# That column reflects who last updated the delivery status, not who was assigned
+# the manifest.  The manifest-level assignment lives only in reports.*
+#
+# This rule applies to:
+#   GET /api/analytics/drivers   — per-driver performance breakdown
+#   GET /api/analytics/manifests — driver name displayed per manifest
+#   GET /api/analytics/overview  — driver filter param resolution
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def derive_manifest_status(statuses: list) -> str:
     """

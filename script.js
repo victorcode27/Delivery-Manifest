@@ -339,6 +339,9 @@ function setupEventListeners() {
         document.getElementById('logout-btn').addEventListener('click', handleLogout);
 
         // New navigation buttons
+        document.getElementById('analytics-btn').addEventListener('click', () => {
+            window.location.href = 'analytics.html';
+        });
         document.getElementById('dispatch-report-btn').addEventListener('click', () => {
             window.location.href = 'dispatch_report.html';
         });
@@ -2124,6 +2127,13 @@ function applyPermissions() {
         if (settingsBtn) settingsBtn.classList.remove('guest-hidden');
     } else {
         if (settingsBtn) settingsBtn.classList.add('guest-hidden');
+    }
+
+    // Analytics — office roles only; hidden from DRIVER
+    const analyticsBtn = document.getElementById('analytics-btn');
+    if (analyticsBtn) {
+        if (currentUserRole === 'DRIVER') analyticsBtn.classList.add('guest-hidden');
+        else analyticsBtn.classList.remove('guest-hidden');
     }
 }
 
