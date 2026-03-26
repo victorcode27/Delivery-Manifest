@@ -107,6 +107,179 @@
                 </div>
             </section>
 
+            <!-- ── Load Value Analysis ───────────────────────────────── -->
+            <section class="card">
+                <div class="section-header">
+                    <h2><i data-lucide="package"></i> Load Value Analysis</h2>
+                    <div class="section-header-actions">
+                        <span id="value-manifests-count" class="results-count"></span>
+                    </div>
+                </div>
+
+                <!-- Value Overview KPI row -->
+                <div class="kpi-grid">
+                    <div class="kpi-card">
+                        <div class="kpi-value" id="kpi-total-value">—</div>
+                        <div class="kpi-label">Total Value Dispatched</div>
+                    </div>
+                    <div class="kpi-card">
+                        <div class="kpi-value" id="kpi-value-manifest-count">—</div>
+                        <div class="kpi-label">Manifests</div>
+                    </div>
+                    <div class="kpi-card">
+                        <div class="kpi-value" id="kpi-avg-manifest-value">—</div>
+                        <div class="kpi-label">Avg Manifest Value</div>
+                    </div>
+                    <div class="kpi-card kpi-success">
+                        <div class="kpi-value" id="kpi-highest-manifest-value">—</div>
+                        <div class="kpi-label">Highest Manifest Value</div>
+                    </div>
+                    <div class="kpi-card kpi-warning">
+                        <div class="kpi-value" id="kpi-lowest-manifest-value">—</div>
+                        <div class="kpi-label">Lowest Manifest Value</div>
+                    </div>
+                </div>
+
+                <!-- Value by Manifest sub-section -->
+                <div class="aging-table-wrap" style="margin-top:1.5rem">
+                    <h3>Value by Manifest</h3>
+
+                    <div id="value-manifests-loading" class="loading-state hidden">
+                        <div class="spinner"></div>
+                        <p>Loading manifest values…</p>
+                    </div>
+                    <div id="value-manifests-error" class="error-state hidden">
+                        <i data-lucide="alert-triangle"></i>
+                        <h3>Failed to Load</h3>
+                        <p id="value-manifests-error-msg">An error occurred.</p>
+                        <button id="value-manifests-retry" class="report-btn report-btn-primary">
+                            <i data-lucide="refresh-cw"></i> Retry
+                        </button>
+                    </div>
+                    <div id="value-manifests-empty" class="empty-state hidden">
+                        <i data-lucide="inbox"></i>
+                        <h3>No Manifests Found</h3>
+                        <p>Try adjusting your filters.</p>
+                    </div>
+                    <div id="value-manifests-content" class="hidden">
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Manifest #</th>
+                                        <th>Dispatched</th>
+                                        <th>Truck</th>
+                                        <th>Driver</th>
+                                        <th>Route</th>
+                                        <th class="num-cell">Invoices</th>
+                                        <th class="num-cell">Manifest Value</th>
+                                        <th class="num-cell">Avg Invoice Value</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="value-manifests-tbody"></tbody>
+                            </table>
+                        </div>
+                        <div id="value-manifests-pagination-container" class="pagination-container hidden">
+                            <div class="pagination-info">
+                                <span id="value-manifests-pagination-info"></span>
+                            </div>
+                            <div class="pagination-controls">
+                                <button id="value-manifests-first-btn" class="report-btn-icon" disabled>
+                                    <i data-lucide="chevrons-left"></i>
+                                </button>
+                                <button id="value-manifests-prev-btn" class="report-btn-icon" disabled>
+                                    <i data-lucide="chevron-left"></i>
+                                </button>
+                                <div id="value-manifests-page-numbers" class="page-numbers"></div>
+                                <button id="value-manifests-next-btn" class="report-btn-icon">
+                                    <i data-lucide="chevron-right"></i>
+                                </button>
+                                <button id="value-manifests-last-btn" class="report-btn-icon">
+                                    <i data-lucide="chevrons-right"></i>
+                                </button>
+                            </div>
+                            <div class="pagination-size">
+                                <label for="value-manifests-page-size">Per page:</label>
+                                <select id="value-manifests-page-size">
+                                    <option value="25" selected>25</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Value by Truck sub-section -->
+                <div class="aging-table-wrap" style="margin-top:1.5rem">
+                    <h3>Value by Truck</h3>
+
+                    <div id="value-trucks-loading" class="loading-state hidden">
+                        <div class="spinner"></div>
+                        <p>Loading truck values…</p>
+                    </div>
+                    <div id="value-trucks-error" class="error-state hidden">
+                        <i data-lucide="alert-triangle"></i>
+                        <h3>Failed to Load</h3>
+                        <p id="value-trucks-error-msg">An error occurred.</p>
+                        <button id="value-trucks-retry" class="report-btn report-btn-primary">
+                            <i data-lucide="refresh-cw"></i> Retry
+                        </button>
+                    </div>
+                    <div id="value-trucks-empty" class="empty-state hidden">
+                        <i data-lucide="inbox"></i>
+                        <h3>No Truck Data Found</h3>
+                        <p>Try adjusting your filters.</p>
+                    </div>
+                    <div id="value-trucks-content" class="hidden">
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Truck</th>
+                                        <th class="num-cell">Manifests</th>
+                                        <th class="num-cell">Invoices</th>
+                                        <th class="num-cell">Total Value</th>
+                                        <th class="num-cell">Avg Manifest Value</th>
+                                        <th class="num-cell">Highest Manifest</th>
+                                        <th class="num-cell">Lowest Manifest</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="value-trucks-tbody"></tbody>
+                            </table>
+                        </div>
+                        <div id="value-trucks-pagination-container" class="pagination-container hidden">
+                            <div class="pagination-info">
+                                <span id="value-trucks-pagination-info"></span>
+                            </div>
+                            <div class="pagination-controls">
+                                <button id="value-trucks-first-btn" class="report-btn-icon" disabled>
+                                    <i data-lucide="chevrons-left"></i>
+                                </button>
+                                <button id="value-trucks-prev-btn" class="report-btn-icon" disabled>
+                                    <i data-lucide="chevron-left"></i>
+                                </button>
+                                <div id="value-trucks-page-numbers" class="page-numbers"></div>
+                                <button id="value-trucks-next-btn" class="report-btn-icon">
+                                    <i data-lucide="chevron-right"></i>
+                                </button>
+                                <button id="value-trucks-last-btn" class="report-btn-icon">
+                                    <i data-lucide="chevrons-right"></i>
+                                </button>
+                            </div>
+                            <div class="pagination-size">
+                                <label for="value-trucks-page-size">Per page:</label>
+                                <select id="value-trucks-page-size">
+                                    <option value="25" selected>25</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- ── Dispatch Trends ────────────────────────────────────── -->
             <section class="card">
                 <div class="section-header">

@@ -858,3 +858,269 @@ def analytics_trends(
 
     series.reverse()  # restore chronological (ASC) order after DESC fetch
     return {"granularity": gran, "series": series}
+
+
+# ── Value Analytics shared fragment ───────────────────────────────────────────
+# Simplified FROM / JOIN for value analytics.
+# No delivery_updates join needed — load value derives from report_items.value only.
+_VALUE_FROM = """
+    FROM  reports            r
+    JOIN  report_items      ri ON ri.report_id    = r.id
+    LEFT JOIN customer_routes   cr ON cr.customer_name = ri.customer_name
+"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /api/analytics/value-overview
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/value-overview")
+def analytics_value_overview(
+    date_from:    Optional[str] = None,
+    date_to:      Optional[str] = None,
+    route:        Optional[str] = None,
+    db:           Session       = Depends(get_db),
+    current_user: dict          = Depends(require_office_read),
+):
+    """
+    Fleet-wide load value KPIs.
+
+    Uses a two-level query so average/highest/lowest are computed from
+    per-manifest totals, not from the raw invoice-level rows.
+    """
+    conditions: list = []
+    params:     dict = {}
+
+    _date_filters(conditions, params, date_from, date_to)
+    _route_filter(conditions, params, route)
+
+    where_sql = _where(conditions)
+
+    try:
+        row = db.execute(text(f"""
+            WITH manifest_vals AS (
+                SELECT
+                    r.id,
+                    COALESCE(SUM(ri.value), 0) AS manifest_value,
+                    COUNT(ri.id)               AS invoice_count
+                {_VALUE_FROM}
+                {where_sql}
+                GROUP BY r.id
+            )
+            SELECT
+                COALESCE(SUM(manifest_value), 0) AS total_dispatched_value,
+                COUNT(*)                          AS manifest_count,
+                COALESCE(SUM(invoice_count), 0)  AS invoice_count,
+                COALESCE(AVG(manifest_value), 0) AS average_manifest_value,
+                COALESCE(MAX(manifest_value), 0) AS highest_manifest_value,
+                COALESCE(MIN(manifest_value), 0) AS lowest_manifest_value
+            FROM manifest_vals
+        """), params).fetchone()
+    except Exception:
+        logger.error("analytics/value-overview query failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return {
+        "total_dispatched_value":  round(float(row.total_dispatched_value  or 0), 2),
+        "manifest_count":          int(row.manifest_count                   or 0),
+        "invoice_count":           int(row.invoice_count                    or 0),
+        "average_manifest_value":  round(float(row.average_manifest_value  or 0), 2),
+        "highest_manifest_value":  round(float(row.highest_manifest_value  or 0), 2),
+        "lowest_manifest_value":   round(float(row.lowest_manifest_value   or 0), 2),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /api/analytics/value-manifests
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/value-manifests")
+def analytics_value_manifests(
+    date_from:  Optional[str] = None,
+    date_to:    Optional[str] = None,
+    route:      Optional[str] = None,
+    search:     Optional[str] = None,
+    page:       int           = 1,
+    page_size:  int           = 25,
+    db:         Session       = Depends(get_db),
+    current_user: dict        = Depends(require_office_read),
+):
+    """
+    Paginated per-manifest load value breakdown.
+
+    One row per manifest. manifest_value = SUM(ri.value).
+    average_invoice_value computed server-side as manifest_value / invoice_count.
+    Driver display uses r.driver text with 'Unassigned' fallback (same as manifests endpoint).
+    Truck display uses COALESCE(NULLIF(TRIM(r.reg_number),''), 'Unassigned').
+    """
+    page      = max(1, page)
+    page_size = max(1, min(200, page_size))
+    offset    = (page - 1) * page_size
+
+    conditions: list = []
+    params:     dict = {}
+
+    _date_filters(conditions, params, date_from, date_to)
+    _route_filter(conditions, params, route)
+
+    if search:
+        conditions.append("""(
+            LOWER(r.manifest_number) LIKE LOWER(:search)
+            OR LOWER(r.reg_number)   LIKE LOWER(:search)
+            OR LOWER(r.driver)       LIKE LOWER(:search)
+            OR LOWER(cr.route_name)  LIKE LOWER(:search)
+        )""")
+        params["search"] = f"%{search}%"
+
+    where_sql = _where(conditions)
+
+    agg_cte = f"""
+        SELECT
+            r.id                                                         AS report_id,
+            r.manifest_number,
+            r.date_dispatched                                            AS dispatch_date,
+            COALESCE(NULLIF(TRIM(r.reg_number), ''), 'Unassigned')       AS truck,
+            r.driver,
+            MIN(cr.route_name)                                           AS route,
+            COUNT(ri.id)                                                 AS invoice_count,
+            COALESCE(SUM(ri.value), 0)                                   AS manifest_value
+        {_VALUE_FROM}
+        {where_sql}
+        GROUP BY r.id, r.manifest_number, r.date_dispatched,
+                 r.reg_number, r.driver
+    """
+
+    try:
+        total = db.execute(text(f"""
+            SELECT COUNT(DISTINCT r.id)
+            {_VALUE_FROM}
+            {where_sql}
+        """), params).scalar() or 0
+
+        rows = db.execute(text(f"""
+            WITH agg AS ({agg_cte})
+            SELECT *,
+                CASE WHEN invoice_count > 0
+                     THEN manifest_value / invoice_count
+                     ELSE 0 END AS average_invoice_value
+            FROM agg
+            ORDER BY dispatch_date DESC NULLS LAST, manifest_number DESC
+            LIMIT :limit OFFSET :offset
+        """), {**params, "limit": page_size, "offset": offset}).fetchall()
+
+    except Exception:
+        logger.error("analytics/value-manifests query failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    items = []
+    for r in rows:
+        items.append({
+            "manifest_number":       r.manifest_number,
+            "dispatch_date":         r.dispatch_date,
+            "truck":                 r.truck,
+            "driver":                r.driver or 'Unassigned',
+            "route":                 r.route  or '—',
+            "invoice_count":         int(r.invoice_count          or 0),
+            "manifest_value":        round(float(r.manifest_value        or 0), 2),
+            "average_invoice_value": round(float(r.average_invoice_value or 0), 2),
+        })
+
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /api/analytics/value-trucks
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/value-trucks")
+def analytics_value_trucks(
+    date_from:  Optional[str] = None,
+    date_to:    Optional[str] = None,
+    route:      Optional[str] = None,
+    search:     Optional[str] = None,
+    page:       int           = 1,
+    page_size:  int           = 25,
+    db:         Session       = Depends(get_db),
+    current_user: dict        = Depends(require_office_read),
+):
+    """
+    Paginated per-truck load value aggregation.
+
+    Two-level CTE:
+      1. manifest_vals — one row per manifest, with truck fallback applied
+      2. truck_agg    — group manifests by truck for count/sum/avg/min/max
+    Search filters on the resolved truck label in the outer query.
+    """
+    page      = max(1, page)
+    page_size = max(1, min(200, page_size))
+    offset    = (page - 1) * page_size
+
+    conditions: list = []
+    params:     dict = {}
+
+    _date_filters(conditions, params, date_from, date_to)
+    _route_filter(conditions, params, route)
+
+    where_sql = _where(conditions)
+
+    manifest_vals_cte = f"""
+        SELECT
+            COALESCE(NULLIF(TRIM(r.reg_number), ''), 'Unassigned') AS truck,
+            COALESCE(SUM(ri.value), 0)                             AS manifest_value,
+            COUNT(ri.id)                                           AS invoice_count
+        {_VALUE_FROM}
+        {where_sql}
+        GROUP BY r.id, r.reg_number
+    """
+
+    truck_agg_cte = """
+        SELECT
+            truck,
+            COUNT(*)                                  AS manifests_assigned,
+            COALESCE(SUM(invoice_count), 0)           AS invoices_carried,
+            COALESCE(SUM(manifest_value), 0)          AS total_value_carried,
+            COALESCE(AVG(manifest_value), 0)          AS average_manifest_value,
+            COALESCE(MAX(manifest_value), 0)          AS highest_manifest_value,
+            COALESCE(MIN(manifest_value), 0)          AS lowest_manifest_value
+        FROM manifest_vals
+        GROUP BY truck
+    """
+
+    search_where = ""
+    if search:
+        search_where = "WHERE LOWER(truck) LIKE LOWER(:search)"
+        params["search"] = f"%{search}%"
+
+    try:
+        total = db.execute(text(f"""
+            WITH manifest_vals AS ({manifest_vals_cte}),
+            truck_agg AS ({truck_agg_cte})
+            SELECT COUNT(*) FROM truck_agg {search_where}
+        """), params).scalar() or 0
+
+        rows = db.execute(text(f"""
+            WITH manifest_vals AS ({manifest_vals_cte}),
+            truck_agg AS ({truck_agg_cte})
+            SELECT * FROM truck_agg
+            {search_where}
+            ORDER BY total_value_carried DESC
+            LIMIT :limit OFFSET :offset
+        """), {**params, "limit": page_size, "offset": offset}).fetchall()
+
+    except Exception:
+        logger.error("analytics/value-trucks query failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    items = []
+    for r in rows:
+        items.append({
+            "truck":                  r.truck,
+            "manifests_assigned":     int(r.manifests_assigned     or 0),
+            "invoices_carried":       int(r.invoices_carried       or 0),
+            "total_value_carried":    round(float(r.total_value_carried    or 0), 2),
+            "average_manifest_value": round(float(r.average_manifest_value or 0), 2),
+            "highest_manifest_value": round(float(r.highest_manifest_value or 0), 2),
+            "lowest_manifest_value":  round(float(r.lowest_manifest_value  or 0), 2),
+        })
+
+    return {"total": total, "page": page, "page_size": page_size, "items": items}

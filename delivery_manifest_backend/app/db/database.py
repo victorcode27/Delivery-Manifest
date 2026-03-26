@@ -600,6 +600,9 @@ def _create_indexes(db, *, skip_unique_invoice: bool = False) -> None:
         # customer_routes — Phase 2 analytics: route leaderboard GROUP BY
         ("idx_cr_route_name",
          "CREATE INDEX IF NOT EXISTS idx_cr_route_name  ON customer_routes(route_name)"),
+        # reports.reg_number — value analytics: truck-level GROUP BY and filter
+        ("idx_reports_reg_number",
+         "CREATE INDEX IF NOT EXISTS idx_reports_reg_number ON reports(reg_number)"),
     ]
 
     for name, ddl in indexes:

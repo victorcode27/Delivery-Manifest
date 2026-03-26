@@ -35,9 +35,11 @@ let filterState = {
 
 // ── Section Pagination State ──────────────────────────────────────────────
 
-let manifestsState  = { offset: 0, limit: 25, total: 0 };
-let driversState    = { offset: 0, limit: 25, total: 0 };
-let exceptionsState = { offset: 0, limit: 25, total: 0, status: '' };
+let manifestsState      = { offset: 0, limit: 25, total: 0 };
+let driversState        = { offset: 0, limit: 25, total: 0 };
+let exceptionsState     = { offset: 0, limit: 25, total: 0, status: '' };
+let valueManifestsState = { offset: 0, limit: 25, total: 0 };
+let valueTrucksState    = { offset: 0, limit: 25, total: 0 };
 
 // ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -59,6 +61,11 @@ function fmtNum(v) {
 function fmtPct(v) {
     if (v === null || v === undefined) return '—';
     return v + '%';
+}
+
+function fmtMoney(v) {
+    if (v === null || v === undefined) return '—';
+    return Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 /**
@@ -803,6 +810,137 @@ async function exportDrivers() {
     }
 }
 
+// ── Load Value Analysis ───────────────────────────────────────────────────
+
+async function loadValueOverview() {
+    try {
+        const res = await apiFetch(`${API_BASE}/value-overview?${buildParams()}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        renderValueOverviewCards(await res.json());
+    } catch (e) {
+        console.error('[Analytics] Value overview error:', e.message);
+        renderValueOverviewCards(null);
+    }
+}
+
+function renderValueOverviewCards(d) {
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    if (!d) {
+        ['kpi-total-value', 'kpi-value-manifest-count', 'kpi-avg-manifest-value',
+         'kpi-highest-manifest-value', 'kpi-lowest-manifest-value'].forEach(id => set(id, '—'));
+        return;
+    }
+    set('kpi-total-value',            fmtMoney(d.total_dispatched_value));
+    set('kpi-value-manifest-count',   fmtNum(d.manifest_count));
+    set('kpi-avg-manifest-value',     fmtMoney(d.average_manifest_value));
+    set('kpi-highest-manifest-value', fmtMoney(d.highest_manifest_value));
+    set('kpi-lowest-manifest-value',  fmtMoney(d.lowest_manifest_value));
+}
+
+async function loadValueManifests(offset) {
+    if (offset !== undefined && offset !== null) valueManifestsState.offset = offset;
+    showState('value-manifests', 'loading');
+
+    try {
+        const page = Math.floor(valueManifestsState.offset / valueManifestsState.limit) + 1;
+        const qs   = buildParams({ page, page_size: valueManifestsState.limit });
+        const res  = await apiFetch(`${API_BASE}/value-manifests?${qs}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        valueManifestsState.total = data.total || 0;
+
+        const countEl = document.getElementById('value-manifests-count');
+        if (countEl) countEl.textContent = `${valueManifestsState.total} manifests`;
+
+        if (!data.items || data.items.length === 0) {
+            showState('value-manifests', 'empty');
+            updatePagination('value-manifests', valueManifestsState, loadValueManifests);
+            return;
+        }
+
+        renderValueManifestsTable(data.items);
+        updatePagination('value-manifests', valueManifestsState, loadValueManifests);
+        showState('value-manifests', 'content');
+
+    } catch (e) {
+        console.error('[Analytics] Value manifests error:', e.message);
+        const errEl = document.getElementById('value-manifests-error-msg');
+        if (errEl) errEl.textContent = e.message;
+        showState('value-manifests', 'error');
+    }
+}
+
+function renderValueManifestsTable(rows) {
+    const tbody = document.getElementById('value-manifests-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    rows.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${escapeHtml(r.manifest_number)}</td>
+            <td>${escapeHtml(r.dispatch_date || '—')}</td>
+            <td>${escapeHtml(r.truck)}</td>
+            <td>${escapeHtml(r.driver)}</td>
+            <td>${escapeHtml(r.route)}</td>
+            <td class="num-cell">${fmtNum(r.invoice_count)}</td>
+            <td class="num-cell">${fmtMoney(r.manifest_value)}</td>
+            <td class="num-cell">${fmtMoney(r.average_invoice_value)}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+async function loadValueTrucks(offset) {
+    if (offset !== undefined && offset !== null) valueTrucksState.offset = offset;
+    showState('value-trucks', 'loading');
+
+    try {
+        const page = Math.floor(valueTrucksState.offset / valueTrucksState.limit) + 1;
+        const qs   = buildParams({ page, page_size: valueTrucksState.limit });
+        const res  = await apiFetch(`${API_BASE}/value-trucks?${qs}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        valueTrucksState.total = data.total || 0;
+
+        if (!data.items || data.items.length === 0) {
+            showState('value-trucks', 'empty');
+            updatePagination('value-trucks', valueTrucksState, loadValueTrucks);
+            return;
+        }
+
+        renderValueTrucksTable(data.items);
+        updatePagination('value-trucks', valueTrucksState, loadValueTrucks);
+        showState('value-trucks', 'content');
+
+    } catch (e) {
+        console.error('[Analytics] Value trucks error:', e.message);
+        const errEl = document.getElementById('value-trucks-error-msg');
+        if (errEl) errEl.textContent = e.message;
+        showState('value-trucks', 'error');
+    }
+}
+
+function renderValueTrucksTable(rows) {
+    const tbody = document.getElementById('value-trucks-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    rows.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${escapeHtml(r.truck)}</td>
+            <td class="num-cell">${fmtNum(r.manifests_assigned)}</td>
+            <td class="num-cell">${fmtNum(r.invoices_carried)}</td>
+            <td class="num-cell">${fmtMoney(r.total_value_carried)}</td>
+            <td class="num-cell">${fmtMoney(r.average_manifest_value)}</td>
+            <td class="num-cell">${fmtMoney(r.highest_manifest_value)}</td>
+            <td class="num-cell">${fmtMoney(r.lowest_manifest_value)}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
 // ── Load All Sections ─────────────────────────────────────────────────────
 
 /**
@@ -811,12 +949,15 @@ async function exportDrivers() {
  */
 function loadAll() {
     loadOverview();
+    loadValueOverview();
     loadTrends();
     loadManifests(0);
     loadDrivers(0);
     loadRoutes();
     loadExceptions(0);
     loadAging();
+    loadValueManifests(0);
+    loadValueTrucks(0);
 }
 
 // ── Filter Bar ────────────────────────────────────────────────────────────
@@ -832,9 +973,11 @@ function readFilters() {
 
 function applyFilters() {
     readFilters();
-    manifestsState.offset  = 0;
-    driversState.offset    = 0;
-    exceptionsState.offset = 0;
+    manifestsState.offset      = 0;
+    driversState.offset        = 0;
+    exceptionsState.offset     = 0;
+    valueManifestsState.offset = 0;
+    valueTrucksState.offset    = 0;
     loadAll();
 }
 
@@ -847,9 +990,11 @@ function resetFilters() {
     filterState = { dateFrom: '', dateTo: '', search: '', route: '' };
     exceptionsState.status = '';
     document.getElementById('exceptions-status-filter').value = '';
-    manifestsState.offset  = 0;
-    driversState.offset    = 0;
-    exceptionsState.offset = 0;
+    manifestsState.offset      = 0;
+    driversState.offset        = 0;
+    exceptionsState.offset     = 0;
+    valueManifestsState.offset = 0;
+    valueTrucksState.offset    = 0;
     loadAll();
 }
 
@@ -881,10 +1026,12 @@ document.addEventListener('DOMContentLoaded', () => {
     clearSearch.addEventListener('click', () => {
         searchEl.value = '';
         clearSearch.classList.add('hidden');
-        filterState.search = '';
-        manifestsState.offset  = 0;
-        driversState.offset    = 0;
-        exceptionsState.offset = 0;
+        filterState.search         = '';
+        manifestsState.offset      = 0;
+        driversState.offset        = 0;
+        exceptionsState.offset     = 0;
+        valueManifestsState.offset = 0;
+        valueTrucksState.offset    = 0;
         loadAll();
     });
 
@@ -899,12 +1046,14 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('trends-granularity').addEventListener('change', () => loadTrends());
 
     // ── Retry buttons ────────────────────────────────────────────────────
-    document.getElementById('trends-retry').addEventListener('click',     () => loadTrends());
-    document.getElementById('manifests-retry').addEventListener('click',  () => loadManifests());
-    document.getElementById('drivers-retry').addEventListener('click',    () => loadDrivers());
-    document.getElementById('routes-retry').addEventListener('click',     () => loadRoutes());
-    document.getElementById('exceptions-retry').addEventListener('click', () => loadExceptions());
-    document.getElementById('aging-retry').addEventListener('click',      () => loadAging());
+    document.getElementById('trends-retry').addEventListener('click',          () => loadTrends());
+    document.getElementById('manifests-retry').addEventListener('click',       () => loadManifests());
+    document.getElementById('drivers-retry').addEventListener('click',         () => loadDrivers());
+    document.getElementById('routes-retry').addEventListener('click',          () => loadRoutes());
+    document.getElementById('exceptions-retry').addEventListener('click',      () => loadExceptions());
+    document.getElementById('aging-retry').addEventListener('click',           () => loadAging());
+    document.getElementById('value-manifests-retry').addEventListener('click', () => loadValueManifests());
+    document.getElementById('value-trucks-retry').addEventListener('click',    () => loadValueTrucks());
 
     // ── Export buttons ────────────────────────────────────────────────────
     document.getElementById('trends-export-btn').addEventListener('click',     () => exportTrends());
@@ -931,6 +1080,19 @@ document.addEventListener('DOMContentLoaded', () => {
         driversState.limit  = parseInt(e.target.value, 10);
         driversState.offset = 0;
         loadDrivers(0);
+    });
+
+    // ── Value page-size selectors ────────────────────────────────────────
+    document.getElementById('value-manifests-page-size').addEventListener('change', e => {
+        valueManifestsState.limit  = parseInt(e.target.value, 10);
+        valueManifestsState.offset = 0;
+        loadValueManifests(0);
+    });
+
+    document.getElementById('value-trucks-page-size').addEventListener('change', e => {
+        valueTrucksState.limit  = parseInt(e.target.value, 10);
+        valueTrucksState.offset = 0;
+        loadValueTrucks(0);
     });
 
     // ── Initial data load ────────────────────────────────────────────────
