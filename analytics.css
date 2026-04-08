@@ -489,3 +489,45 @@ td { padding: 0.75rem 0.875rem; color: var(--text-primary); }
     .pagination-controls   { justify-content: center; }
     .pagination-size       { justify-content: center; }
 }
+
+/* ── Collapsible Sections ────────────────────────────────────────────────── */
+
+/* Clickable header affordance — only on collapsible sections */
+.collapsible-section > .section-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+/* Highlight chevron on hover to signal interactivity */
+.collapsible-section > .section-header:hover .section-toggle-icon {
+    color: var(--primary-color);
+}
+
+/* Remove header bottom-margin when body is hidden to avoid dead space */
+.collapsible-section.is-collapsed > .section-header {
+    margin-bottom: 0;
+}
+
+/* The collapsed body — toggled by JS, never touches the existing .hidden class */
+.section-body--collapsed {
+    display: none;
+}
+
+/* Chevron icon wrapper */
+.section-toggle-icon {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    transition: transform 0.2s ease, color 0.15s;
+}
+
+.section-toggle-icon i {
+    width: 18px;
+    height: 18px;
+}
+
+/* Rotate 90° anticlockwise when collapsed (chevron-down → chevron-right) */
+.section-toggle-icon--collapsed {
+    transform: rotate(-90deg);
+}

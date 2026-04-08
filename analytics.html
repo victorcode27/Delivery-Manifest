@@ -77,8 +77,12 @@
             </section>
 
             <!-- ── KPI Cards ──────────────────────────────────────────── -->
-            <section class="card">
-                <h2><i data-lucide="bar-chart-2"></i> Overview</h2>
+            <section class="card collapsible-section" id="section-overview">
+                <div class="section-header">
+                    <h2><i data-lucide="bar-chart-2"></i> Overview</h2>
+                    <span class="section-toggle-icon"><i data-lucide="chevron-down"></i></span>
+                </div>
+                <div class="section-body">
                 <div class="kpi-grid">
                     <div class="kpi-card">
                         <div class="kpi-value" id="kpi-manifests">—</div>
@@ -105,16 +109,19 @@
                         <div class="kpi-label">Missing PoD</div>
                     </div>
                 </div>
+                </div><!-- /.section-body -->
             </section>
 
             <!-- ── Load Value Analysis ───────────────────────────────── -->
-            <section class="card">
+            <section class="card collapsible-section" id="section-value">
                 <div class="section-header">
                     <h2><i data-lucide="package"></i> Load Value Analysis</h2>
                     <div class="section-header-actions">
                         <span id="value-manifests-count" class="results-count"></span>
+                        <span class="section-toggle-icon"><i data-lucide="chevron-down"></i></span>
                     </div>
                 </div>
+                <div class="section-body">
 
                 <!-- Value Overview KPI row -->
                 <div class="kpi-grid">
@@ -278,10 +285,11 @@
                         </div>
                     </div>
                 </div>
+                </div><!-- /.section-body -->
             </section>
 
             <!-- ── Dispatch Trends ────────────────────────────────────── -->
-            <section class="card">
+            <section class="card collapsible-section" id="section-trends">
                 <div class="section-header">
                     <h2><i data-lucide="trending-up"></i> Dispatch Trends</h2>
                     <div class="section-header-actions">
@@ -295,8 +303,10 @@
                         <button id="trends-export-btn" class="report-btn report-btn-secondary">
                             <i data-lucide="download"></i> Export CSV
                         </button>
+                        <span class="section-toggle-icon"><i data-lucide="chevron-down"></i></span>
                     </div>
                 </div>
+                <div class="section-body">
 
                 <!-- Loading -->
                 <div id="trends-loading" class="loading-state hidden">
@@ -340,10 +350,11 @@
                         </table>
                     </div>
                 </div>
+                </div><!-- /.section-body -->
             </section>
 
             <!-- ── Manifests Table ────────────────────────────────────── -->
-            <section class="card">
+            <section class="card collapsible-section" id="section-manifests">
                 <div class="section-header">
                     <h2><i data-lucide="clipboard-list"></i> Manifests Overview</h2>
                     <div class="section-header-actions">
@@ -351,8 +362,10 @@
                         <button id="manifests-export-btn" class="report-btn report-btn-secondary">
                             <i data-lucide="download"></i> Export CSV
                         </button>
+                        <span class="section-toggle-icon"><i data-lucide="chevron-down"></i></span>
                     </div>
                 </div>
+                <div class="section-body">
 
                 <!-- Loading -->
                 <div id="manifests-loading" class="loading-state hidden">
@@ -431,10 +444,11 @@
                         </div>
                     </div>
                 </div>
+                </div><!-- /.section-body -->
             </section>
 
             <!-- ── Drivers Table ──────────────────────────────────────── -->
-            <section class="card">
+            <section class="card collapsible-section" id="section-drivers">
                 <div class="section-header">
                     <h2><i data-lucide="users"></i> Driver Performance</h2>
                     <div class="section-header-actions">
@@ -442,8 +456,10 @@
                         <button id="drivers-export-btn" class="report-btn report-btn-secondary">
                             <i data-lucide="download"></i> Export CSV
                         </button>
+                        <span class="section-toggle-icon"><i data-lucide="chevron-down"></i></span>
                     </div>
                 </div>
+                <div class="section-body">
 
                 <!-- Loading -->
                 <div id="drivers-loading" class="loading-state hidden">
@@ -517,10 +533,11 @@
                         </div>
                     </div>
                 </div>
+                </div><!-- /.section-body -->
             </section>
 
             <!-- ── Route / Area Performance ──────────────────────────── -->
-            <section class="card">
+            <section class="card collapsible-section" id="section-routes">
                 <div class="section-header">
                     <h2><i data-lucide="map-pin"></i> Route / Area Performance</h2>
                     <div class="section-header-actions">
@@ -531,8 +548,10 @@
                         <button id="areas-export-btn" class="report-btn report-btn-secondary">
                             <i data-lucide="download"></i> Export Areas
                         </button>
+                        <span class="section-toggle-icon"><i data-lucide="chevron-down"></i></span>
                     </div>
                 </div>
+                <div class="section-body">
 
                 <!-- Loading -->
                 <div id="routes-loading" class="loading-state hidden">
@@ -600,10 +619,11 @@
                         </div>
                     </div>
                 </div>
+                </div><!-- /.section-body -->
             </section>
 
             <!-- ── Exceptions Table ───────────────────────────────────── -->
-            <section class="card">
+            <section class="card collapsible-section" id="section-exceptions">
                 <div class="section-header">
                     <h2><i data-lucide="alert-circle"></i> Delivery Exceptions</h2>
                     <div class="section-header-actions">
@@ -620,8 +640,10 @@
                         <button id="exceptions-export-btn" class="report-btn report-btn-secondary">
                             <i data-lucide="download"></i> Export CSV
                         </button>
+                        <span class="section-toggle-icon"><i data-lucide="chevron-down"></i></span>
                     </div>
                 </div>
+                <div class="section-body">
 
                 <!-- Loading -->
                 <div id="exceptions-loading" class="loading-state hidden">
@@ -695,11 +717,16 @@
                         </div>
                     </div>
                 </div>
+                </div><!-- /.section-body -->
             </section>
 
             <!-- ── Aging Summary ──────────────────────────────────────── -->
-            <section class="card">
-                <h2><i data-lucide="clock"></i> Aging Summary — Unresolved Deliveries</h2>
+            <section class="card collapsible-section" id="section-aging">
+                <div class="section-header">
+                    <h2><i data-lucide="clock"></i> Aging Summary — Unresolved Deliveries</h2>
+                    <span class="section-toggle-icon"><i data-lucide="chevron-down"></i></span>
+                </div>
+                <div class="section-body">
 
                 <!-- Loading -->
                 <div id="aging-loading" class="loading-state hidden">
@@ -759,6 +786,7 @@
                         </div>
                     </div>
                 </div>
+                </div><!-- /.section-body -->
             </section>
 
         </main>

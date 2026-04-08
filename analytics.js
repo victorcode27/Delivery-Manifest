@@ -998,6 +998,87 @@ function resetFilters() {
     loadAll();
 }
 
+// ── Collapsible Sections ──────────────────────────────────────────────────
+
+const COLLAPSE_KEY = 'analytics_section_state';
+
+/**
+ * Default collapsed state for each section.
+ * true = collapsed on first visit; false = open.
+ */
+const SECTION_DEFAULTS = {
+    'section-overview'   : false,
+    'section-value'      : false,
+    'section-trends'     : true,
+    'section-manifests'  : false,
+    'section-drivers'    : true,
+    'section-routes'     : true,
+    'section-exceptions' : false,
+    'section-aging'      : false,
+};
+
+function _collapseReadState() {
+    try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}'); }
+    catch { return {}; }
+}
+
+function _collapseSaveState(state) {
+    try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(state)); }
+    catch { /* quota / private browsing — silently ignore */ }
+}
+
+/**
+ * Apply saved (or default) collapse state before first render.
+ * Called once on DOMContentLoaded, before loadAll().
+ */
+function applyCollapseState() {
+    const saved = _collapseReadState();
+    Object.keys(SECTION_DEFAULTS).forEach(id => {
+        const section = document.getElementById(id);
+        if (!section) return;
+        const body = section.querySelector(':scope > .section-body');
+        const icon = section.querySelector('.section-toggle-icon');
+        const isCollapsed = Object.prototype.hasOwnProperty.call(saved, id)
+            ? saved[id]
+            : SECTION_DEFAULTS[id];
+        if (isCollapsed) {
+            if (body) body.classList.add('section-body--collapsed');
+            section.classList.add('is-collapsed');
+            if (icon) icon.classList.add('section-toggle-icon--collapsed');
+        }
+    });
+}
+
+/**
+ * Attach click listeners to collapsible section headers.
+ * Guards against clicks on interactive children (button, select, input, a).
+ * Persists state to localStorage.
+ */
+function initCollapsible() {
+    const saved = _collapseReadState();
+
+    document.querySelectorAll('.collapsible-section > .section-header').forEach(header => {
+        header.addEventListener('click', e => {
+            // Do not toggle when clicking a control embedded in the header
+            if (e.target.closest('button, select, input, a')) return;
+
+            const section = header.closest('.collapsible-section');
+            const body    = section && section.querySelector(':scope > .section-body');
+            const icon    = section && section.querySelector('.section-toggle-icon');
+            if (!section || !body) return;
+
+            const isNowCollapsed = body.classList.toggle('section-body--collapsed');
+            section.classList.toggle('is-collapsed', isNowCollapsed);
+            if (icon) icon.classList.toggle('section-toggle-icon--collapsed', isNowCollapsed);
+
+            if (section.id) {
+                saved[section.id] = isNowCollapsed;
+                _collapseSaveState(saved);
+            }
+        });
+    });
+}
+
 // ── Initialisation ────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1094,6 +1175,10 @@ document.addEventListener('DOMContentLoaded', () => {
         valueTrucksState.offset = 0;
         loadValueTrucks(0);
     });
+
+    // ── Collapsible sections ─────────────────────────────────────────────
+    applyCollapseState();
+    initCollapsible();
 
     // ── Initial data load ────────────────────────────────────────────────
     loadAll();
