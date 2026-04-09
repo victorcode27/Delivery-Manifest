@@ -4,6 +4,7 @@ Polls a folder for new PDF files and ensures they're fully written before proces
 """
 
 import os
+import re
 import time
 import logging
 import datetime
@@ -14,9 +15,18 @@ import invoice_processor
 # --- CONFIGURATION ---
 # --- CONFIGURATION ---
 try:
-    from invoice_processor import INPUT_FOLDER as WATCH_FOLDER
+    from invoice_processor import (
+        INPUT_FOLDER          as WATCH_FOLDER,
+        IMPORT_CUTOFF_DATE,
+        SKIP_FILENAME_PATTERNS,
+    )
 except ImportError:
-    WATCH_FOLDER = os.getenv("INVOICE_INPUT_FOLDER", r"\\BRD-DESKTOP-ELV\storage")  # Fallback
+    WATCH_FOLDER           = os.getenv("INVOICE_INPUT_FOLDER", r"\\BRD-DESKTOP-ELV\storage")
+    IMPORT_CUTOFF_DATE     = datetime.datetime(2026, 1, 23)
+    SKIP_FILENAME_PATTERNS = [r"REPRINT", r"FISCAL", r"TAX.?INVOICE"]
+
+# Pre-computed timestamp for fast mtime comparison in the polling loop
+CUTOFF_TIMESTAMP = IMPORT_CUTOFF_DATE.timestamp()
 
 POLL_INTERVAL = 20  # seconds - Optimized for responsiveness
 FILE_STABILITY_CHECKS = 3  # Number of consecutive checks to verify file is stable
@@ -143,9 +153,22 @@ class FileWatcher:
         finally:
             db.close()
 
-        # Only mark folder files as known if they are already in the DB
+        # Mark files as known if already in DB, older than cutoff, or excluded type.
+        # This prevents historical/excluded files from flooding the new-file queue
+        # on every watcher start.
         for file_path in current_files:
             if file_path.name in processed_filenames:
+                self.known_files.add(file_path.name)
+                continue
+            try:
+                if file_path.stat().st_mtime < CUTOFF_TIMESTAMP:
+                    # Old file — silently skip; never try to import it
+                    self.known_files.add(file_path.name)
+                    continue
+            except OSError:
+                pass  # File may have vanished between scan and stat; poll will handle it
+            if any(re.search(p, file_path.name, re.IGNORECASE) for p in SKIP_FILENAME_PATTERNS):
+                logger.info(f"[SKIP-TYPE] Excluded file type (init): {file_path.name}")
                 self.known_files.add(file_path.name)
 
         missed = len(current_files) - len(self.known_files)
@@ -162,10 +185,20 @@ class FileWatcher:
             invoice_data = invoice_processor.extract_invoice_data(str(file_path))
             
             if invoice_data:
+                # Skip invoices where customer name could not be extracted.
+                # Credit notes are exempt — their identity comes from reference_number.
+                if (invoice_data.get("customer_name") == "Unknown"
+                        and invoice_data.get("type") != "CREDIT_NOTE"):
+                    logger.warning(
+                        f"[SKIP-UNKNOWN] Customer name could not be extracted, "
+                        f"not importing: {file_path.name}"
+                    )
+                    return False
+
                 # Save to database
                 import database
                 success = database.add_order(invoice_data)
-                
+
                 if success:
                     logger.info(f"[ADDED] {invoice_data['customer_name']} - ${invoice_data['total_value']}")
                     return True
@@ -209,7 +242,26 @@ class FileWatcher:
                 # Process new files
                 for file_path in new_files:
                     logger.info(f"[NEW] File detected: {file_path.name}")
-                    
+
+                    # Skip files older than the import cutoff
+                    try:
+                        if file_path.stat().st_mtime < CUTOFF_TIMESTAMP:
+                            logger.info(
+                                f"[SKIP-CUTOFF] Older than cutoff "
+                                f"({IMPORT_CUTOFF_DATE.strftime('%Y-%m-%d')}), "
+                                f"not importing: {file_path.name}"
+                            )
+                            self.known_files.add(file_path.name)
+                            continue
+                    except OSError:
+                        pass  # File may have vanished; stability check will catch it
+
+                    # Skip excluded file types
+                    if any(re.search(p, file_path.name, re.IGNORECASE) for p in SKIP_FILENAME_PATTERNS):
+                        logger.info(f"[SKIP-TYPE] Excluded file type: {file_path.name}")
+                        self.known_files.add(file_path.name)
+                        continue
+
                     # Check if file is stable (fully written)
                     if self.is_file_stable(file_path):
                         # Process the file

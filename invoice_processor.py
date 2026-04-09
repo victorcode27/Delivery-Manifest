@@ -26,6 +26,22 @@ from sqlalchemy import text
 # --- CONFIGURATION ---
 INPUT_FOLDER = os.getenv("INVOICE_INPUT_FOLDER", r"\\BRD-DESKTOP-ELV\storage")
 
+# Import cutoff: skip files whose file-system mtime is older than this date.
+# Defined here (not inside main()) so file_watcher.py can import it and apply
+# the same threshold, keeping both import paths in sync.
+IMPORT_CUTOFF_DATE = datetime.datetime(2026, 1, 23)
+
+# Filename patterns for file types that must never be imported.
+# Checked case-insensitively against the base filename before extraction.
+SKIP_FILENAME_PATTERNS = [r"REPRINT", r"FISCAL", r"TAX.?INVOICE"]
+
+# Number of consecutive pre-open missing-file failures before the share is
+# declared offline and the run is aborted.  5 tolerates the occasional
+# genuinely-absent REPRINT file without triggering a false abort, while
+# still catching the cliff-edge pattern (all files fail instantly) that
+# occurs when the SMB session drops mid-run.
+CONSECUTIVE_MISSING_THRESHOLD = 5
+
 # Output folders for file organization
 BASE_FOLDER = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_FOLDER = os.path.join(BASE_FOLDER, "Invoices_Processed")
@@ -98,9 +114,12 @@ def extract_invoice_data(pdf_path):
                     data["customer_name"] = name_match.group(1).strip()
 
             # Invoice Total
-            total_match = re.search(r"Invoice\s*Total[:\s]+(?:USD\s*)?([\d,]+\.?\d*)", text, re.IGNORECASE)
+            # (?:[A-Z]{2,4}\s+)? skips any currency code (ZWG, USD, ZWL, ZAR, etc.)
+            total_match = re.search(r"Invoice\s*Total[:\s]+(?:[A-Z]{2,4}\s+)?([\d,]+\.?\d*)", text, re.IGNORECASE)
             if total_match:
                 data["total_value"] = total_match.group(1).strip()
+            else:
+                logger.warning(f"[WARN] Could not extract Invoice Total from {os.path.basename(pdf_path)}")
 
             # Invoice Number - Check for BCRN (Credit Note) or BINV
             # Priority to BCRN to identify Credit Note
@@ -335,16 +354,15 @@ def main():
     pdf_files = glob.glob(os.path.join(INPUT_FOLDER, "*.pdf"))
     
     # --- DATE FILTER OPTIMIZATION ---
-    # Only process files modified on or after January 23, 2026
-    cutoff_date = datetime.datetime(2026, 1, 23)
-    cutoff_timestamp = cutoff_date.timestamp()
-    
+    # Only process files modified on or after IMPORT_CUTOFF_DATE.
+    cutoff_timestamp = IMPORT_CUTOFF_DATE.timestamp()
+
     initial_count = len(pdf_files)
     pdf_files = [f for f in pdf_files if os.path.exists(f) and os.path.getmtime(f) >= cutoff_timestamp]
     skipped_count = initial_count - len(pdf_files)
-    
+
     if skipped_count > 0:
-        logger.info(f"Skipped {skipped_count} files older than {cutoff_date.strftime('%Y-%m-%d')}")
+        logger.info(f"Skipped {skipped_count} files older than {IMPORT_CUTOFF_DATE.strftime('%Y-%m-%d')}")
 
     if not pdf_files:
         logger.info(f"No PDF files found in {INPUT_FOLDER}")
@@ -353,27 +371,75 @@ def main():
     new_count = 0
     failed_count = 0
     credit_note_count = 0
-    
+    consecutive_missing = 0
+
     for pdf_file in pdf_files:
         filename = os.path.basename(pdf_file)
-        
+
         if filename in processed_filenames:
             logger.debug(f"Skipping already processed: {filename}")
             continue
-            
+
+        # Skip excluded file types (REPRINT, FISCAL, TAX INVOICE, etc.)
+        if any(re.search(p, filename, re.IGNORECASE) for p in SKIP_FILENAME_PATTERNS):
+            logger.info(f"[SKIP-TYPE] Excluded file type, not importing: {filename}")
+            continue
+
+        # --- Pre-open existence check ---
+        # Guards against the SMB session dropping mid-run: the file list was
+        # built at scan time; if the share has since gone offline, the UNC
+        # path no longer resolves and pdfplumber.open() would hang for ~71 s
+        # before raising [Errno 2].  Checking existence first catches this
+        # cheaply (fast False once the OS has cached the dead connection).
+        if not os.path.exists(pdf_file):
+            logger.warning(f"File unavailable before open (share down?): {filename}")
+            failed_count += 1
+            consecutive_missing += 1
+
+            if consecutive_missing >= CONSECUTIVE_MISSING_THRESHOLD:
+                if not os.path.exists(INPUT_FOLDER):
+                    logger.error(
+                        f"Share went offline mid-run after {consecutive_missing} consecutive "
+                        f"unavailable files — aborting remaining import."
+                    )
+                    break
+                else:
+                    # Folder is still reachable; individual files are absent.
+                    # Log once, reset the streak, and keep going.
+                    logger.warning(
+                        f"{consecutive_missing} consecutive unavailable files but share is "
+                        f"still reachable — files may be genuinely absent. Continuing."
+                    )
+                    consecutive_missing = 0
+            continue
+
+        # File is accessible — reset the consecutive-missing streak.
+        consecutive_missing = 0
+
         logger.info(f"Processing: {filename}...")
         invoice_data = extract_invoice_data(pdf_file)
-        
+
         if invoice_data:
+            # Skip invoices where customer name could not be extracted.
+            # Credit notes are exempt — their identity comes from reference_number,
+            # not customer_name, so they must still be imported for CN logic to work.
+            if (invoice_data.get("customer_name") == "Unknown"
+                    and invoice_data.get("type") != "CREDIT_NOTE"):
+                logger.warning(
+                    f"[SKIP-UNKNOWN] Customer name could not be extracted, "
+                    f"not importing: {filename}"
+                )
+                continue
+
             if invoice_data.get("type") == "CREDIT_NOTE":
                 credit_note_count += 1
-            
+
             if process_invoice_logic(invoice_data):
                 new_count += 1
         else:
             failed_count += 1
             logger.error(f"  -> Failed to extract data from {filename}")
-    
+
     logger.info(f"Done. Processed {new_count} new files ({credit_note_count} Credit Notes), {failed_count} failed.")
 
 
