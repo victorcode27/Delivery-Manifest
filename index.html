@@ -21,16 +21,28 @@
 <body class="auth-pending">
     <div class="app-container">
         <header class="app-header">
-            <div class="header-content branding">
-                <div class="logo-box">
-                    <img src="logo.png" alt="Company Logo" class="logo-img">
+            <!-- Row 1: Branding + Danger/Utility actions -->
+            <div class="header-top">
+                <div class="header-content branding">
+                    <div class="logo-box">
+                        <img src="logo.png" alt="Company Logo" class="logo-img">
+                    </div>
+                    <div class="title-box">
+                        <h1>BRD DISTRIBUTION</h1>
+                        <span class="subtitle">Delivery Manifest System</span>
+                    </div>
                 </div>
-                <div class="title-box">
-                    <h1>BRD DISTRIBUTION</h1>
-                    <span class="subtitle">Delivery Manifest System</span>
+                <div class="header-controls">
+                    <button id="reset-btn" class="btn btn-danger">
+                        <i data-lucide="refresh-cw"></i> Reset System
+                    </button>
+                    <button id="logout-btn" class="btn btn-secondary">
+                        <i data-lucide="log-out"></i> Logout
+                    </button>
                 </div>
             </div>
-            <div class="header-actions">
+            <!-- Row 2: Main navigation -->
+            <div class="header-nav">
                 <button id="settings-btn" class="btn btn-secondary" onclick="window.location.href='settings.html'">
                     <i data-lucide="settings"></i> Settings
                 </button>
@@ -38,90 +50,101 @@
                     <i data-lucide="bar-chart-2"></i> Analytics
                 </button>
                 <button id="dispatch-report-btn" class="btn btn-secondary">
-                    <i data-lucide="truck"></i> Dispatch Report
+                    <i data-lucide="truck"></i> Dispatch
                 </button>
                 <button id="outstanding-orders-btn" class="btn btn-secondary">
-                    <i data-lucide="alert-circle"></i> Outstanding Orders
+                    <i data-lucide="alert-circle"></i> Orders
                 </button>
                 <button id="delivery-status-btn" class="btn btn-secondary"
                         onclick="window.location.href='delivery_status.html'">
-                    <i data-lucide="map-pin"></i> Delivery Status
+                    <i data-lucide="map-pin"></i> Delivery
                 </button>
                 <button id="view-reports-btn" class="btn btn-secondary">
-                    <i data-lucide="file-bar-chart-2"></i> View Reports
-                </button>
-                <button id="reset-btn" class="btn btn-danger">
-                    <i data-lucide="refresh-cw"></i> Reset System
-                </button>
-                <button id="logout-btn" class="btn btn-secondary">
-                    <i data-lucide="log-out"></i> Logout
+                    <i data-lucide="file-bar-chart-2"></i> Reports
                 </button>
             </div>
         </header>
 
         <main class="main-content">
-            <!-- Header Information Section -->
+            <!-- Page Title -->
+            <div class="page-title-block">
+                <h2>Create Manifest</h2>
+                <p class="page-subtitle">Assign truck, crew, and loading details</p>
+            </div>
+
+            <!-- Route Details Form -->
             <section class="card form-section">
-                <h2><i data-lucide="file-spreadsheet"></i> Route Details</h2>
-                <div class="grid-form">
-                    <div class="form-group">
-                        <label for="manifest-number">Manifest Number</label>
-                        <input type="text" id="manifest-number" readonly class="auto-generated">
-                    </div>
-                    <div class="form-group">
-                        <label for="date">Date</label>
-                        <input type="date" id="date">
-                    </div>
-                    <div class="form-group">
-                        <label for="reg-number">Registration #</label>
-                        <select id="reg-number">
-                            <option value="">Select Truck</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="align-self: end;">
-                        <button id="load-invoices-btn" class="btn btn-primary" type="button">
-                            <i data-lucide="file-search"></i> Load Invoices
-                        </button>
-                    </div>
-                </div>
-
-                <div class="grid-form three-col">
-                    <div class="form-group">
-                        <label for="driver">Driver Name</label>
-                        <select id="driver">
-                            <option value="">Select Driver</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="assistant">Assistant Name</label>
-                        <select id="assistant">
-                            <option value="">Select Assistant</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="checker">Checker Name</label>
-                        <select id="checker">
-                            <option value="">Select Checker</option>
-                        </select>
+                <!-- Trip Info -->
+                <div class="form-group-section">
+                    <h3 class="form-group-heading">Trip Info</h3>
+                    <div class="grid-form">
+                        <div class="form-group">
+                            <label for="manifest-number">Manifest Number</label>
+                            <input type="text" id="manifest-number" readonly class="auto-generated">
+                        </div>
+                        <div class="form-group">
+                            <label for="date">Date</label>
+                            <input type="date" id="date">
+                        </div>
+                        <div class="form-group">
+                            <label for="reg-number">Registration #</label>
+                            <select id="reg-number">
+                                <option value="">Select Truck</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="align-self: end;">
+                            <button id="load-invoices-btn" class="btn btn-primary" type="button">
+                                <i data-lucide="file-search"></i> Load Invoices
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                <div class="grid-form four-col">
-                    <div class="form-group">
-                        <label for="pallets-brown">Pallets (Brown)</label>
-                        <input type="number" id="pallets-brown" value="0">
+                <!-- Crew -->
+                <div class="form-group-section">
+                    <h3 class="form-group-heading">Crew</h3>
+                    <div class="grid-form three-col">
+                        <div class="form-group">
+                            <label for="driver">Driver Name</label>
+                            <select id="driver">
+                                <option value="">Select Driver</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="assistant">Assistant Name</label>
+                            <select id="assistant">
+                                <option value="">Select Assistant</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="checker">Checker Name</label>
+                            <select id="checker">
+                                <option value="">Select Checker</option>
+                            </select>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="pallets-blue">Pallets (Blue)</label>
-                        <input type="number" id="pallets-blue" value="0">
-                    </div>
-                    <div class="form-group">
-                        <label for="crates">Crates</label>
-                        <input type="number" id="crates" value="0">
-                    </div>
-                    <div class="form-group">
-                        <label for="mileage">Mileage</label>
-                        <input type="number" id="mileage" value="0">
+                </div>
+
+                <!-- Load Details -->
+                <div class="form-group-section">
+                    <h3 class="form-group-heading">Load Details</h3>
+                    <div class="grid-form four-col">
+                        <div class="form-group">
+                            <label for="pallets-brown">Pallets (Brown)</label>
+                            <input type="number" id="pallets-brown" value="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="pallets-blue">Pallets (Blue)</label>
+                            <input type="number" id="pallets-blue" value="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="crates">Crates</label>
+                            <input type="number" id="crates" value="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="mileage">Mileage</label>
+                            <input type="number" id="mileage" value="0">
+                        </div>
                     </div>
                 </div>
             </section>
