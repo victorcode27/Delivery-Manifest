@@ -110,7 +110,7 @@ def get_available_orders_excluding_staging(
         ).fetchone()[0]
 
         # Paginated data fetch
-        data_query = f"SELECT o.* {where} ORDER BY o.date_processed DESC LIMIT ? OFFSET ?"
+        data_query = f"SELECT o.* {where} ORDER BY COALESCE(NULLIF(o.invoice_date, 'N/A'), o.date_processed) DESC LIMIT ? OFFSET ?"
         rows = execute_query(db, data_query, params + [limit, offset]).fetchall()
         return [dict(row._mapping) for row in rows], total
     finally:
