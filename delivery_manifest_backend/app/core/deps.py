@@ -50,6 +50,7 @@ _OFFICE_ROLES         = frozenset({"ADMIN", "DISPATCH"})
 _OFFICE_READ_ROLES    = frozenset({"ADMIN", "DISPATCH", "REPORTS_ONLY"})
 _DELIVERY_WRITE_ROLES = frozenset({"DRIVER", "ADMIN", "DISPATCH"})
 _DELIVERY_READ_ROLES  = frozenset({"DRIVER", "ADMIN", "DISPATCH", "REPORTS_ONLY"})
+_DRIVER_ROLES         = frozenset({"DRIVER"})
 
 
 def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
@@ -212,5 +213,26 @@ def require_delivery_read(current_user: dict = Depends(get_current_user)) -> dic
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Delivery access required",
+        )
+    return current_user
+
+
+def require_driver(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    Raises 403 unless the caller has DRIVER role.
+
+    Used for endpoints that are exclusively field actions performed by a driver
+    in a truck — e.g. submitting GPS location pings.  Office roles (ADMIN,
+    DISPATCH, REPORTS_ONLY) are explicitly blocked; they must use a DRIVER
+    account for any testing that requires this guard.
+    """
+    role = current_user.get("role", "")
+    if role not in _DRIVER_ROLES:
+        logger.warning(
+            f"Driver-only access denied for user '{current_user.get('username')}' (role={role})"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Driver access required",
         )
     return current_user

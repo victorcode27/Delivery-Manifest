@@ -45,6 +45,12 @@ def _configure_root_logger() -> None:
 
     root.setLevel(logging.DEBUG if settings.DEV_MODE else logging.INFO)
 
+    # pdfminer (used internally by pdfplumber) is extremely verbose at DEBUG —
+    # it emits one log line per token/object for every page of every PDF.
+    # Cap these regardless of DEV_MODE so they never flood the console.
+    logging.getLogger("pdfminer").setLevel(logging.WARNING)
+    logging.getLogger("pdfplumber").setLevel(logging.WARNING)
+
     formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
 
     # Rotating file handler

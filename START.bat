@@ -1,6 +1,13 @@
 @echo off
 title Delivery Manifest System - LAN Mode
 
+:: ── SHARE CREDENTIALS ────────────────────────────────────────────────────────
+:: Credentials are stored in Windows Credential Manager — NOT in this file.
+:: Run this ONCE from any cmd window (as the user who runs START.bat):
+::   cmdkey /add:BRD-DESKTOP-ELV /user:BRD-DESKTOP-ELV\YourUsername /pass:YourPassword
+:: To update the password later, run the same command again with the new password.
+:: ─────────────────────────────────────────────────────────────────────────────
+
 echo ============================================
 echo    Delivery Manifest System (LAN MODE)
 echo ============================================
@@ -9,11 +16,29 @@ echo.
 :: Change to the script's directory
 cd /d "%~dp0"
 
-echo [1/3] Processing any new PDF invoices...
+echo [1/4] Connecting to invoice share...
+:: Drop any stale or dead session first (error suppressed — no session is fine)
+net use "\\BRD-DESKTOP-ELV\storage" /delete /y > nul 2>&1
+:: Reconnect using credentials stored in Windows Credential Manager
+net use "\\BRD-DESKTOP-ELV\storage" /persistent:no
+if %errorlevel% neq 0 (
+    echo.
+    echo ERROR: Cannot connect to \\BRD-DESKTOP-ELV\storage
+    echo   1. Confirm BRD-DESKTOP-ELV is powered on and reachable.
+    echo   2. Confirm the 'storage' share is enabled on that machine.
+    echo   3. Store credentials once via: cmdkey /add:BRD-DESKTOP-ELV /user:BRD-DESKTOP-ELV\YourUsername /pass:YourPassword
+    echo.
+    pause
+    exit /b 1
+)
+echo Share connected successfully.
+echo.
+
+echo [2/4] Processing any new PDF invoices...
 python invoice_processor.py
 echo.
 
-echo [2/3] Starting API server (LAN MODE)...
+echo [3/4] Starting API server (LAN MODE)...
 echo WARNING: Server will be accessible to other PCs on your network
 echo.
 
@@ -30,7 +55,7 @@ start "Invoice API Server" cmd /k "python -m uvicorn delivery_manifest_backend.a
 :: Wait for server to start
 timeout /t 3 /nobreak > nul
 
-echo [3/3] Opening web application...
+echo [4/4] Opening web application...
 start "" "http://localhost:8000"
 
 echo.
@@ -47,4 +72,3 @@ echo If other PCs can't connect, run: setup_firewall.bat
 echo.
 echo You can close this window now.
 pause
-

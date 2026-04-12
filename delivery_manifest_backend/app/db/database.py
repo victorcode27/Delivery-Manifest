@@ -374,6 +374,25 @@ def _create_tables(db) -> None:
             FOREIGN KEY (changed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
         )
         """,
+        # ── location_pings ────────────────────────────────────────────────────
+        # Append-only table for v1 truck GPS tracking.
+        # driver_username is denormalised from the JWT at write time — no FK to
+        # users so that pings from deleted accounts are preserved for audit.
+        # manifest_number is intentionally not FK-constrained — pings can arrive
+        # before the report row is committed on a hot-reload edge case.
+        """
+        CREATE TABLE IF NOT EXISTS location_pings (
+            id               SERIAL PRIMARY KEY,
+            manifest_number  TEXT NOT NULL,
+            reg_number       TEXT NOT NULL,
+            driver_username  TEXT NOT NULL,
+            latitude         DOUBLE PRECISION NOT NULL,
+            longitude        DOUBLE PRECISION NOT NULL,
+            accuracy         REAL,
+            recorded_at      TIMESTAMPTZ DEFAULT NOW(),
+            device_timestamp TEXT
+        )
+        """,
     ]
 
     for ddl in ddl_statements:
@@ -603,6 +622,15 @@ def _create_indexes(db, *, skip_unique_invoice: bool = False) -> None:
         # reports.reg_number — value analytics: truck-level GROUP BY and filter
         ("idx_reports_reg_number",
          "CREATE INDEX IF NOT EXISTS idx_reports_reg_number ON reports(reg_number)"),
+        # location_pings — compound index: manifest equality filter + recorded_at ordering in one
+        # B-tree traversal.  Optimal for GET /tracking/latest/{manifest_number} which uses
+        # WHERE manifest_number = :mn ORDER BY recorded_at DESC LIMIT 1 — the DB seeks to the
+        # first matching manifest_number leaf and returns the first row without an in-memory sort.
+        # The manifest_number leading key also covers the manifest + driver_username filter in the
+        # POST fetch-after-insert query.  Two separate single-column indexes would require a sort
+        # step; this compound index eliminates it.
+        ("idx_lp_manifest_at",
+         "CREATE INDEX IF NOT EXISTS idx_lp_manifest_at ON location_pings(manifest_number, recorded_at DESC)"),
     ]
 
     for name, ddl in indexes:

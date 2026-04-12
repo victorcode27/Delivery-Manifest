@@ -12,9 +12,10 @@
 const DS_API = '/api/delivery';
 
 // Role constants — mirrors the backend VALID_ROLES set
-const DS_ROLE_ADMIN    = 'ADMIN';
-const DS_ROLE_DISPATCH = 'DISPATCH';
-const DS_ROLE_DRIVER   = 'DRIVER';
+const DS_ROLE_ADMIN        = 'ADMIN';
+const DS_ROLE_DISPATCH     = 'DISPATCH';
+const DS_ROLE_DRIVER       = 'DRIVER';
+const DS_ROLE_REPORTS_ONLY = 'REPORTS_ONLY';
 
 let dsUserRole = null;   // populated in dsInit() from localStorage
 
@@ -31,6 +32,20 @@ let dsState = {
 // Replaces the old hardcoded DS_ALLOWED_TRANSITIONS constant.
 let dsAllowedTransitions = {};
 let dsBulkConfirmable    = [];
+
+// ── Live tracking state ────────────────────────────────────────────────────
+const DS_STALE_MINUTES = 5;     // age threshold before stale warning
+const TRACKING_POLL_MS = 30000; // poll interval in ms
+
+let dsTracking = {
+    manifestNumber: null,   // manifest currently being tracked
+    intervalId:     null,   // setInterval handle
+    leafletMap:     null,   // Leaflet map instance
+    leafletMarker:  null,   // Leaflet marker instance
+    session:        0,      // incremented on each new tracking session; invalidates stale polls
+};
+let dsTrackHasData = false; // true once the map has been rendered with real position data
+// ──────────────────────────────────────────────────────────────────────────
 
 async function dsLoadMeta() {
     try {
@@ -87,10 +102,249 @@ function dsFormatDate(val) {
     } catch { return String(val); }
 }
 
+// recorded_at is a TIMESTAMPTZ string — format with time component for the tracking panel.
+function dsFormatRecordedAt(val) {
+    if (!val) return '—';
+    try {
+        const d = new Date(val);
+        if (isNaN(d)) return String(val);
+        return d.toLocaleString('en-GB', {
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+        });
+    } catch { return String(val); }
+}
+
+function dsIsStale(recordedAt) {
+    if (!recordedAt) return false;
+    try {
+        return (Date.now() - new Date(recordedAt).getTime()) > DS_STALE_MINUTES * 60000;
+    } catch { return false; }
+}
+
+// Explicit allowlist — mirrors _OFFICE_READ_ROLES frozenset in deps.py exactly.
+// A null/unknown dsUserRole is denied by default (Set.has returns false), which is
+// safer than a blocklist where any unrecognised future role would be silently permitted.
+const DS_TRACK_ROLES = new Set([DS_ROLE_ADMIN, DS_ROLE_DISPATCH, DS_ROLE_REPORTS_ONLY]);
+
+function dsCanTrack() {
+    return DS_TRACK_ROLES.has(dsUserRole);
+}
+
 function dsEsc(str) {
     const d = document.createElement('div');
     d.textContent = (str != null) ? String(str) : '';
     return d.innerHTML;
+}
+
+// ── Live tracking ─────────────────────────────────────────────────────────
+
+/**
+ * Open the tracking panel for the given manifest.
+ * If the same manifest is already being tracked, just scroll to the panel.
+ * Stops any previously active tracking before starting new.
+ */
+async function dsTrackManifest(manifestNumber) {
+    if (dsTracking.manifestNumber === manifestNumber) {
+        document.getElementById('ds-track-panel').scrollIntoView({ behavior: 'smooth' });
+        return;
+    }
+    dsStopTracking();
+    dsTracking.manifestNumber = manifestNumber;
+
+    document.getElementById('ds-track-manifest-label').textContent = manifestNumber;
+    document.getElementById('ds-track-panel').classList.remove('ds-track-panel--hidden');
+    document.getElementById('ds-track-body').innerHTML = `
+        <div class="ds-track-state-box">
+            <div class="spinner" style="width:20px;height:20px;border-width:2px;flex-shrink:0"></div>
+            <span>Fetching position&hellip;</span>
+        </div>`;
+    document.getElementById('ds-track-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    const mySession = dsTracking.session;
+    await dsPollTracking(mySession);
+    if (dsTracking.session === mySession) {
+        dsTracking.intervalId = setInterval(() => dsPollTracking(mySession), TRACKING_POLL_MS);
+    }
+}
+
+/** Stop polling, destroy the Leaflet map, and hide the panel. */
+function dsStopTracking() {
+    if (dsTracking.intervalId)  { clearInterval(dsTracking.intervalId); dsTracking.intervalId = null; }
+    if (dsTracking.leafletMap)  { dsTracking.leafletMap.remove(); dsTracking.leafletMap = null; dsTracking.leafletMarker = null; }
+    dsTracking.manifestNumber = null;
+    dsTracking.session++;
+    dsTrackHasData = false;
+    document.getElementById('ds-track-panel').classList.add('ds-track-panel--hidden');
+    document.getElementById('ds-track-body').innerHTML = '';
+}
+
+/**
+ * Fetch the latest ping for the tracked manifest and update the panel.
+ * - 404 → no data yet; keeps retrying every 30 s.
+ * - other error → shows error message if no map data; otherwise keeps last position.
+ * - success → first call builds the map; subsequent calls update marker + metadata.
+ */
+async function dsPollTracking(session) {
+    if (!dsTracking.manifestNumber) return;
+    // Capture the manifest so the URL uses what was active when we started.
+    const manifestNumber = dsTracking.manifestNumber;
+    try {
+        const res = await apiFetch(
+            `/api/tracking/latest/${encodeURIComponent(manifestNumber)}`
+        );
+        // Discard result if the session was closed or superseded while we awaited.
+        if (dsTracking.session !== session) return;
+        if (res.status === 404) {
+            if (!dsTrackHasData) dsSetTrackBodyState('no-data');
+            return;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (dsTracking.session !== session) return;
+        if (!dsTrackHasData) {
+            dsInitTrackBody(data);   // sets dsTrackHasData internally after metadata is in DOM
+        } else {
+            dsUpdateTrackMeta(data);
+        }
+    } catch (e) {
+        console.error('[Tracking] Poll error:', e);
+        if (dsTracking.session !== session) return;
+        // Only wipe the panel body if we have never shown position data.
+        // If a map is already visible, silently keep the last known position.
+        if (!dsTrackHasData) dsSetTrackBodyState('error', e.message);
+    }
+}
+
+/**
+ * First-render: build metadata rows, then attempt Leaflet map initialization.
+ *
+ * dsTrackHasData is set to true immediately after innerHTML is written so that:
+ *   - driver/reg/timestamp/coordinates are always visible even if Leaflet is missing
+ *   - a Leaflet init failure does NOT trigger dsSetTrackBodyState('error') on the
+ *     next poll, which would wipe the metadata panel
+ * If Leaflet is unavailable (L undefined) or map init throws, dsShowMapUnavailable()
+ * renders a plain fallback inside the map container; all metadata rows remain intact.
+ */
+function dsInitTrackBody(data) {
+    const { latitude: lat, longitude: lng, recorded_at: recordedAt,
+            driver_username: driver, reg_number: reg, accuracy } = data;
+    const stale = dsIsStale(recordedAt);
+
+    document.getElementById('ds-track-body').innerHTML = `
+        <div id="ds-track-stale" class="ds-track-stale" style="${stale ? '' : 'display:none'}">
+            <i data-lucide="alert-triangle" style="width:15px;height:15px;flex-shrink:0"></i>
+            Last update was more than ${DS_STALE_MINUTES} minutes ago &mdash; truck may have stopped reporting.
+        </div>
+        <div class="ds-track-meta">
+            <div class="ds-track-meta-item">
+                <span class="ds-track-meta-label">Driver</span>
+                <span class="ds-track-meta-value">${dsEsc(driver)}</span>
+            </div>
+            <div class="ds-track-meta-item">
+                <span class="ds-track-meta-label">Truck Reg</span>
+                <span class="ds-track-meta-value">${dsEsc(reg)}</span>
+            </div>
+            <div class="ds-track-meta-item">
+                <span class="ds-track-meta-label">Last Update</span>
+                <span class="ds-track-meta-value" id="ds-track-recorded-at">${dsFormatRecordedAt(recordedAt)}</span>
+            </div>
+            <div class="ds-track-meta-item">
+                <span class="ds-track-meta-label">Coordinates</span>
+                <span class="ds-track-meta-value" id="ds-track-coords">${lat.toFixed(6)}, ${lng.toFixed(6)}</span>
+            </div>
+            ${accuracy != null
+                ? `<div class="ds-track-meta-item">
+                       <span class="ds-track-meta-label">Accuracy</span>
+                       <span class="ds-track-meta-value" id="ds-track-accuracy">\u00b1${Math.round(accuracy)}\u00a0m</span>
+                   </div>`
+                : ''}
+        </div>
+        <div id="ds-track-map"></div>`;
+    lucide.createIcons();
+
+    // Metadata is now in the DOM — mark as having data so no subsequent poll failure
+    // can wipe it via dsSetTrackBodyState().
+    dsTrackHasData = true;
+
+    if (typeof L === 'undefined') {
+        dsShowMapUnavailable();
+        return;
+    }
+
+    try {
+        const map = L.map(document.getElementById('ds-track-map')).setView([lat, lng], 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '\u00a9 <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            maxZoom: 19,
+        }).addTo(map);
+        const marker = L.marker([lat, lng]).addTo(map);
+        marker.bindPopup(
+            `<b>${dsEsc(driver)}</b> \u2014 ${dsEsc(reg)}<br>${dsFormatRecordedAt(recordedAt)}`
+        ).openPopup();
+        dsTracking.leafletMap    = map;
+        dsTracking.leafletMarker = marker;
+    } catch (e) {
+        console.error('[Tracking] Leaflet map init failed:', e);
+        dsShowMapUnavailable();
+    }
+}
+
+/** Replace the map container with a plain-text fallback when the map cannot render. */
+function dsShowMapUnavailable() {
+    const mapEl = document.getElementById('ds-track-map');
+    if (!mapEl) return;
+    mapEl.style.height = 'auto';
+    mapEl.innerHTML = `<div class="ds-track-state-box" style="justify-content:center">
+        <i data-lucide="map-off"></i>
+        <span>Map unavailable &mdash; use the coordinates above to locate the truck.</span>
+    </div>`;
+    lucide.createIcons();
+}
+
+/**
+ * Subsequent-poll update: move the marker and refresh metadata text in place.
+ * Does NOT re-render the DOM — preserves the user's map zoom and pan.
+ */
+function dsUpdateTrackMeta(data) {
+    const { latitude: lat, longitude: lng, recorded_at: recordedAt, accuracy } = data;
+
+    const raEl = document.getElementById('ds-track-recorded-at');
+    if (raEl) raEl.textContent = dsFormatRecordedAt(recordedAt);
+
+    const coordsEl = document.getElementById('ds-track-coords');
+    if (coordsEl) coordsEl.textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+
+    const accEl = document.getElementById('ds-track-accuracy');
+    if (accEl && accuracy != null) accEl.textContent = `\u00b1${Math.round(accuracy)}\u00a0m`;
+
+    const staleEl = document.getElementById('ds-track-stale');
+    if (staleEl) staleEl.style.display = dsIsStale(recordedAt) ? '' : 'none';
+
+    // Map is optional — update marker only when Leaflet initialised successfully.
+    if (dsTracking.leafletMap && dsTracking.leafletMarker) {
+        const latlng = L.latLng(lat, lng);
+        dsTracking.leafletMarker.setLatLng(latlng);
+        dsTracking.leafletMap.panTo(latlng);
+        dsTracking.leafletMarker.getPopup().setContent(
+            `<b>${dsEsc(data.driver_username)}</b> \u2014 ${dsEsc(data.reg_number)}<br>${dsFormatRecordedAt(recordedAt)}`
+        );
+    }
+}
+
+/** Render a non-map state (no-data or error) inside the tracking panel body. */
+function dsSetTrackBodyState(which, msg) {
+    const html = (which === 'no-data')
+        ? `<div class="ds-track-state-box">
+               <i data-lucide="map-pin-off"></i>
+               <span>No location data received yet for this manifest. Retrying every 30 s.</span>
+           </div>`
+        : `<div class="ds-track-state-box">
+               <i data-lucide="wifi-off"></i>
+               <span>Could not fetch location${msg ? ': ' + dsEsc(msg) : ''}. Retrying in 30 s.</span>
+           </div>`;
+    document.getElementById('ds-track-body').innerHTML = html;
+    lucide.createIcons();
 }
 
 // ── Load manifests from API ────────────────────────────────────────────────
@@ -176,17 +430,24 @@ function renderManifests(manifests) {
             <td class="ds-num ds-failed">${s.failed ?? '—'}</td>
             <td class="ds-num ds-partial">${s.partial ?? '—'}</td>
             <td>${manifestStatusBadge(s.status || 'PENDING')}</td>
-            <td>
+            <td style="white-space:nowrap">
                 <button class="report-btn report-btn-secondary ds-detail-btn"
                         data-manifest="${dsEsc(m.manifest_number)}">
                     <i data-lucide="eye"></i> Details
                 </button>
+                ${dsCanTrack() && (s.status || 'PENDING') === 'IN_PROGRESS'
+                    ? `<button class="report-btn report-btn-primary ds-track-btn"
+                               data-manifest="${dsEsc(m.manifest_number)}"
+                               style="margin-left:6px">
+                           <i data-lucide="map-pin"></i> Track
+                       </button>`
+                    : ''}
             </td>
         `;
 
         // Row click (not on button — button has its own listener via event delegation)
         row.addEventListener('click', (e) => {
-            if (e.target.closest('.ds-detail-btn')) return;
+            if (e.target.closest('.ds-detail-btn') || e.target.closest('.ds-track-btn')) return;
             openDetail(m.manifest_number);
         });
 
@@ -488,13 +749,17 @@ function dsInit() {
     document.getElementById('ds-search').addEventListener('input', handleSearch);
     document.getElementById('ds-close-modal-btn').addEventListener('click', closeDetail);
     document.getElementById('ds-back-btn').addEventListener('click',
-        () => window.location.href = 'index.html');
+        () => { dsStopTracking(); window.location.href = 'index.html'; });
 
-    // Event delegation for Detail buttons inside the table
+    // Event delegation for Detail and Track buttons inside the manifest table
     document.getElementById('ds-table-body').addEventListener('click', (e) => {
-        const btn = e.target.closest('.ds-detail-btn');
-        if (btn) openDetail(btn.dataset.manifest);
+        const detailBtn = e.target.closest('.ds-detail-btn');
+        if (detailBtn) { openDetail(detailBtn.dataset.manifest); return; }
+        const trackBtn = e.target.closest('.ds-track-btn');
+        if (trackBtn) dsTrackManifest(trackBtn.dataset.manifest);
     });
+
+    document.getElementById('ds-track-close-btn').addEventListener('click', dsStopTracking);
 
     // Close modal on backdrop click; handle PoD view and Mark Delivered buttons inside modal
     document.getElementById('ds-detail-modal').addEventListener('click', (e) => {
