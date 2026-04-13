@@ -634,10 +634,13 @@ async function bulkUpdateManifest(manifestNumber, targetStatus) {
     const labels = { IN_TRANSIT: 'In Transit', DELIVERED: 'Delivered', RETURNED: 'Returned', FAILED: 'Failed' };
     const label  = labels[targetStatus] || targetStatus;
 
+    const confirmDetail = targetStatus === 'IN_TRANSIT'
+        ? 'Only pending invoices will be updated. Failed, partial, returned, and already in-transit invoices will be skipped.'
+        : 'Only invoices currently in an eligible state will be updated. PENDING and already-resolved invoices will be skipped.';
+
     if (!confirm(
         `Mark all eligible invoices in manifest ${manifestNumber} as ${label}?\n\n` +
-        `Only invoices currently in an eligible state (e.g. In Transit) will be updated.\n` +
-        `PENDING and already-resolved invoices will be skipped.`
+        confirmDetail
     )) return;
 
     const applyBtn = document.querySelector('.ds-bulk-apply-btn');
