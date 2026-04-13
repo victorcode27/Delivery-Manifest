@@ -575,6 +575,7 @@ function renderDetailModal(manifest) {
                        style="font-size:0.8rem;padding:3px 8px;border:1px solid #cbd5e1;
                               border-radius:6px;cursor:pointer;flex:1;min-width:220px;max-width:280px;">
                    <option value="">— Select action —</option>
+                   <option value="IN_TRANSIT">Mark Entire Manifest In Transit</option>
                    <option value="DELIVERED">Mark Entire Manifest Delivered</option>
                    <option value="RETURNED">Mark Entire Manifest Returned</option>
                    <option value="FAILED">Mark Entire Manifest Failed</option>
@@ -630,7 +631,7 @@ async function bulkUpdateManifest(manifestNumber, targetStatus) {
         return;
     }
 
-    const labels = { DELIVERED: 'Delivered', RETURNED: 'Returned', FAILED: 'Failed' };
+    const labels = { IN_TRANSIT: 'In Transit', DELIVERED: 'Delivered', RETURNED: 'Returned', FAILED: 'Failed' };
     const label  = labels[targetStatus] || targetStatus;
 
     if (!confirm(

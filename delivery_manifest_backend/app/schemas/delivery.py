@@ -143,9 +143,10 @@ class BulkConfirmResponse(BaseModel):
 # ── Bulk status-update schemas ─────────────────────────────────────────────────
 
 # Target statuses accepted by the generic bulk-status-update endpoint.
-# PENDING and IN_TRANSIT are excluded: PENDING items are never auto-advanced,
-# and IN_TRANSIT is an intermediate state, not a terminal bulk target.
-BULK_UPDATE_TARGET_STATUSES = frozenset({"DELIVERED", "RETURNED", "FAILED"})
+# PENDING is excluded: it is the implicit initial state, not a target.
+# IN_TRANSIT is included so dispatch/admin can bulk-move eligible invoices
+# (e.g. PENDING) to IN_TRANSIT before a subsequent bulk DELIVERED/FAILED/RETURNED.
+BULK_UPDATE_TARGET_STATUSES = frozenset({"IN_TRANSIT", "DELIVERED", "RETURNED", "FAILED"})
 
 
 class BulkStatusUpdateRequest(BaseModel):
