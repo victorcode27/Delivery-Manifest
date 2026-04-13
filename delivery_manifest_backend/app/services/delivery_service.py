@@ -169,9 +169,17 @@ def bulk_update_manifest_items(
     from delivery_manifest_backend.app.core.constants import DELIVERY_EVENT_STATUS_CHANGE
 
     # Statuses from which target_status is a valid next step per the state machine.
-    eligible_sources = frozenset(
-        s for s, allowed in ALLOWED_TRANSITIONS.items() if target_status in allowed
-    )
+    #
+    # Special case — bulk IN_TRANSIT is a dispatch action, not a reopen/retry action.
+    # Although ALLOWED_TRANSITIONS permits FAILED, PARTIAL, and RETURNED to re-enter
+    # IN_TRANSIT, the bulk operation must only move PENDING items (first dispatch).
+    # Individual item-level updates retain the full state machine for retries.
+    if target_status == "IN_TRANSIT":
+        eligible_sources = frozenset({"PENDING"})
+    else:
+        eligible_sources = frozenset(
+            s for s, allowed in ALLOWED_TRANSITIONS.items() if target_status in allowed
+        )
 
     all_items = db.execute(
         text("""
