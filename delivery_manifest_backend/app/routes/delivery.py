@@ -38,6 +38,8 @@ import delivery_manifest_backend.app.services.delivery_service as delivery_servi
 from delivery_manifest_backend.app.schemas.delivery import (
     ALLOWED_TRANSITIONS,
     BulkConfirmResponse,
+    BulkStatusUpdateRequest,
+    BulkStatusUpdateResponse,
     DeliveryManifestDetailResponse,
     DeliveryManifestItem,
     DeliveryManifestListResponse,
@@ -445,6 +447,71 @@ def bulk_confirm_manifest(
         manifest_number=manifest_number,
         updated=len(unresolved),
         skipped=skipped,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/delivery/manifests/{manifest_number}/bulk-status-update
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/manifests/{manifest_number}/bulk-status-update", response_model=BulkStatusUpdateResponse)
+def bulk_status_update_manifest(
+    manifest_number: str,
+    body:            BulkStatusUpdateRequest,
+    db:              Session = Depends(get_db),
+    current_user:    dict    = Depends(require_dispatch_or_admin),
+):
+    """
+    Bulk-update all eligible invoices in a manifest to the requested target_status.
+
+    Eligible invoices are those whose current status permits a transition to
+    target_status per the canonical ALLOWED_TRANSITIONS state machine.
+    PENDING items are never auto-advanced through intermediate states.
+    Already-resolved and ineligible items are skipped and counted in 'skipped'.
+
+    target_status must be one of: DELIVERED, RETURNED, FAILED.
+
+    ADMIN / DISPATCH only — same auth level as /bulk-confirm.
+
+    Returns
+    -------
+    manifest_number : echo of the manifest
+    target_status   : echo of the requested target
+    updated         : number of invoices changed to target_status
+    skipped         : number of invoices left untouched
+    """
+    exists = db.execute(
+        text("SELECT 1 FROM reports WHERE manifest_number = :mn LIMIT 1"),
+        {"mn": manifest_number},
+    ).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Manifest not found")
+
+    try:
+        result = delivery_service.bulk_update_manifest_items(
+            db, manifest_number, body.target_status, current_user
+        )
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.error(
+            f"Error bulk-updating manifest '{manifest_number}' to '{body.target_status}'",
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    logger.info(
+        f"Bulk status update: manifest={manifest_number} target={body.target_status} "
+        f"updated={result['updated']} skipped={result['skipped']} "
+        f"by '{current_user['username']}' (role={current_user.get('role')})"
+    )
+    return BulkStatusUpdateResponse(
+        manifest_number = manifest_number,
+        target_status   = body.target_status,
+        updated         = result["updated"],
+        skipped         = result["skipped"],
     )
 
 

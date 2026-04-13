@@ -144,6 +144,110 @@ def fetch_report_item(db: Session, report_item_id: int):
     return item_row
 
 
+def bulk_update_manifest_items(
+    db: Session,
+    manifest_number: str,
+    target_status: str,
+    current_user: dict,
+) -> dict:
+    """
+    Bulk-update all eligible invoices in a manifest to target_status.
+
+    Eligibility is derived dynamically from ALLOWED_TRANSITIONS — only items
+    whose current status lists target_status as a valid next step are updated.
+    PENDING items are never auto-advanced through intermediate states.
+
+    For each eligible item writes:
+      - one delivery_updates UPSERT (preserves existing notes and driver linkage)
+      - one delivery_events audit row
+
+    All writes run inside the caller's transaction; the caller is responsible
+    for commit and rollback.
+
+    Returns {"updated": int, "skipped": int}.
+    """
+    from delivery_manifest_backend.app.core.constants import DELIVERY_EVENT_STATUS_CHANGE
+
+    # Statuses from which target_status is a valid next step per the state machine.
+    eligible_sources = frozenset(
+        s for s, allowed in ALLOWED_TRANSITIONS.items() if target_status in allowed
+    )
+
+    all_items = db.execute(
+        text("""
+            SELECT
+                ri.id            AS report_item_id,
+                ri.invoice_number,
+                COALESCE(du.status, 'PENDING') AS current_status
+            FROM  report_items ri
+            JOIN  reports        r  ON r.id = ri.report_id
+            LEFT JOIN delivery_updates du ON du.report_item_id = ri.id
+            WHERE r.manifest_number = :mn
+        """),
+        {"mn": manifest_number},
+    ).fetchall()
+
+    to_update = [row for row in all_items if row.current_status in eligible_sources]
+    skipped   = len(all_items) - len(to_update)
+
+    for row in to_update:
+        # UPSERT — preserve existing notes and driver linkage via COALESCE,
+        # consistent with the single-item PUT and existing bulk-confirm patterns.
+        db.execute(
+            text("""
+                INSERT INTO delivery_updates
+                    (report_item_id, invoice_number, manifest_number,
+                     driver_user_id, driver_name, status, notes, updated_at)
+                VALUES
+                    (:report_item_id, :invoice_number, :manifest_number,
+                     NULL, NULL, :target_status, NULL, CURRENT_TIMESTAMP)
+                ON CONFLICT (report_item_id) DO UPDATE SET
+                    status         = :target_status,
+                    driver_user_id = COALESCE(delivery_updates.driver_user_id, EXCLUDED.driver_user_id),
+                    driver_name    = COALESCE(delivery_updates.driver_name,    EXCLUDED.driver_name),
+                    notes          = COALESCE(delivery_updates.notes,          EXCLUDED.notes),
+                    updated_at     = CURRENT_TIMESTAMP
+            """),
+            {
+                "report_item_id":  row.report_item_id,
+                "invoice_number":  row.invoice_number,
+                "manifest_number": manifest_number,
+                "target_status":   target_status,
+            },
+        )
+
+        du_id = db.execute(
+            text("SELECT id FROM delivery_updates WHERE report_item_id = :id"),
+            {"id": row.report_item_id},
+        ).scalar()
+
+        db.execute(
+            text("""
+                INSERT INTO delivery_events
+                    (delivery_update_id, report_item_id, manifest_number,
+                     invoice_number, status, previous_status, notes,
+                     event_type, changed_by_user_id, changed_by_username, event_at)
+                VALUES
+                    (:du_id, :report_item_id, :manifest_number,
+                     :invoice_number, :target_status, :previous_status, NULL,
+                     :event_type, :user_id, :username, CURRENT_TIMESTAMP)
+            """),
+            {
+                "du_id":           du_id,
+                "report_item_id":  row.report_item_id,
+                "manifest_number": manifest_number,
+                "invoice_number":  row.invoice_number,
+                "target_status":   target_status,
+                "previous_status": row.current_status,
+                "event_type":      DELIVERY_EVENT_STATUS_CHANGE,
+                "user_id":         current_user["id"],
+                "username":        current_user["username"],
+            },
+        )
+
+    return {"updated": len(to_update), "skipped": skipped}
+
+
 def assert_driver_item_access(item_row, current_user: dict) -> None:
     """
     Raise HTTP 403 if the current user is a DRIVER and the item does not

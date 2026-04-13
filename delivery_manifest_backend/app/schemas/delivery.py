@@ -138,3 +138,34 @@ class BulkConfirmResponse(BaseModel):
     manifest_number: str
     updated:         int   # invoices changed to DELIVERED
     skipped:         int   # invoices already resolved — left untouched
+
+
+# ── Bulk status-update schemas ─────────────────────────────────────────────────
+
+# Target statuses accepted by the generic bulk-status-update endpoint.
+# PENDING and IN_TRANSIT are excluded: PENDING items are never auto-advanced,
+# and IN_TRANSIT is an intermediate state, not a terminal bulk target.
+BULK_UPDATE_TARGET_STATUSES = frozenset({"DELIVERED", "RETURNED", "FAILED"})
+
+
+class BulkStatusUpdateRequest(BaseModel):
+    """Body for POST /manifests/{manifest_number}/bulk-status-update."""
+    target_status: str
+
+    @field_validator("target_status")
+    @classmethod
+    def check_target_status(cls, v: str) -> str:
+        if v not in BULK_UPDATE_TARGET_STATUSES:
+            raise ValueError(
+                f"Invalid bulk target status '{v}'. "
+                f"Allowed: {', '.join(sorted(BULK_UPDATE_TARGET_STATUSES))}"
+            )
+        return v
+
+
+class BulkStatusUpdateResponse(BaseModel):
+    """Returned after POST /manifests/{manifest_number}/bulk-status-update."""
+    manifest_number: str
+    target_status:   str
+    updated:         int   # invoices updated to target_status
+    skipped:         int   # invoices ineligible or already at target — left untouched

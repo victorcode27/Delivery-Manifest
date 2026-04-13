@@ -561,15 +561,28 @@ function renderDetailModal(manifest) {
         }).join('')
         : `<tr><td colspan="${colCount}" style="text-align:center;color:#94a3b8">No invoices found</td></tr>`;
 
-    const hasUnresolved = items.some(item =>
-        dsBulkConfirmable.includes(item.delivery_status || 'PENDING')
-    );
-    const bulkBtnHtml = (canConfirm && hasUnresolved)
-        ? `<div style="margin-bottom:12px;text-align:right;">
-               <button class="ds-bulk-confirm-btn report-btn report-btn-primary"
+    // Bulk action bar — only rendered for DISPATCH/ADMIN.
+    // The dropdown always shows all three targets; eligibility feedback is delivered
+    // via the success/zero-update message after the call, not by pre-filtering options.
+    const bulkActionHtml = canConfirm
+        ? `<div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;
+                       margin-bottom:12px;padding:0.6rem 0.9rem;
+                       background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+               <span style="font-size:0.75rem;font-weight:600;color:#64748b;white-space:nowrap;">
+                   Bulk Action:
+               </span>
+               <select class="ds-bulk-target-select"
+                       style="font-size:0.8rem;padding:3px 8px;border:1px solid #cbd5e1;
+                              border-radius:6px;cursor:pointer;flex:1;min-width:220px;max-width:280px;">
+                   <option value="">— Select action —</option>
+                   <option value="DELIVERED">Mark Entire Manifest Delivered</option>
+                   <option value="RETURNED">Mark Entire Manifest Returned</option>
+                   <option value="FAILED">Mark Entire Manifest Failed</option>
+               </select>
+               <button class="ds-bulk-apply-btn report-btn report-btn-primary"
                        data-manifest="${dsEsc(manifest.manifest_number)}"
-                       style="font-size:0.82rem;padding:5px 14px;">
-                   <i data-lucide="check-circle-2"></i> Confirm Entire Manifest Delivered
+                       style="font-size:0.8rem;padding:4px 14px;white-space:nowrap;">
+                   <i data-lucide="check-square"></i> Apply to All
                </button>
            </div>`
         : '';
@@ -581,7 +594,7 @@ function renderDetailModal(manifest) {
             <span><strong>Overall Status:</strong> ${manifestStatusBadge(manifest.manifest_status || 'PENDING')}</span>
             <span><strong>Invoices:</strong> ${items.length}</span>
         </div>
-        ${bulkBtnHtml}
+        ${bulkActionHtml}
         <div class="table-container ds-detail-table">
             <table>
                 <thead>
@@ -600,6 +613,69 @@ function renderDetailModal(manifest) {
             </table>
         </div>`;
     lucide.createIcons();
+}
+
+/**
+ * POST /api/delivery/manifests/{manifestNumber}/bulk-status-update
+ *
+ * Asks the backend to update all eligible invoices in the manifest to
+ * targetStatus in one atomic operation.  Eligibility is determined server-side
+ * from ALLOWED_TRANSITIONS — PENDING items and already-resolved items are
+ * skipped automatically.  Shows a confirmation before submitting and an
+ * outcome alert (with updated/skipped counts) on success.
+ */
+async function bulkUpdateManifest(manifestNumber, targetStatus) {
+    if (!targetStatus) {
+        alert('Please select a bulk action before clicking Apply.');
+        return;
+    }
+
+    const labels = { DELIVERED: 'Delivered', RETURNED: 'Returned', FAILED: 'Failed' };
+    const label  = labels[targetStatus] || targetStatus;
+
+    if (!confirm(
+        `Mark all eligible invoices in manifest ${manifestNumber} as ${label}?\n\n` +
+        `Only invoices currently in an eligible state (e.g. In Transit) will be updated.\n` +
+        `PENDING and already-resolved invoices will be skipped.`
+    )) return;
+
+    const applyBtn = document.querySelector('.ds-bulk-apply-btn');
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Saving\u2026'; }
+
+    try {
+        const res = await apiFetch(
+            `${DS_API}/manifests/${encodeURIComponent(manifestNumber)}/bulk-status-update`,
+            { method: 'POST', body: JSON.stringify({ target_status: targetStatus }) }
+        );
+
+        if (res.ok) {
+            const data = await res.json();
+            const inv  = (n) => `${n} invoice${n !== 1 ? 's' : ''}`;
+            const msg  = data.updated > 0
+                ? `${inv(data.updated)} marked as ${label}.` +
+                  (data.skipped > 0 ? ` ${inv(data.skipped)} skipped (ineligible or already resolved).` : '')
+                : `No invoices were updated — all ${inv(data.skipped)} are ineligible or already resolved.`;
+            alert(msg);
+            openDetail(manifestNumber);
+            loadManifests();
+        } else {
+            const err = await res.json().catch(() => ({}));
+            alert(err.detail || 'Failed to apply bulk action.');
+            if (applyBtn) {
+                applyBtn.disabled = false;
+                applyBtn.innerHTML = '<i data-lucide="check-square"></i> Apply to All';
+                lucide.createIcons();
+            }
+        }
+    } catch (e) {
+        console.error('[DeliveryStatus] bulkUpdateManifest error:', e);
+        alert('Server error applying bulk action.');
+        if (applyBtn) {
+            applyBtn.disabled = false;
+            applyBtn.innerHTML = '<i data-lucide="check-square"></i> Apply to All';
+            lucide.createIcons();
+        }
+    }
 }
 
 async function viewPodFile(path) {
@@ -785,6 +861,12 @@ function dsInit() {
 
         const bulkBtn = e.target.closest('.ds-bulk-confirm-btn');
         if (bulkBtn) bulkConfirmManifest(bulkBtn.dataset.manifest);
+
+        const bulkApplyBtn = e.target.closest('.ds-bulk-apply-btn');
+        if (bulkApplyBtn) {
+            const sel = document.querySelector('.ds-bulk-target-select');
+            bulkUpdateManifest(bulkApplyBtn.dataset.manifest, sel ? sel.value : '');
+        }
     });
 
     // Load backend constants (allowed_transitions) then fetch manifests.
