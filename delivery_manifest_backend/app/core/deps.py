@@ -1,17 +1,21 @@
 """
 app/core/deps.py
 
-FastAPI dependency helpers for JWT authentication.
+FastAPI dependency helpers for JWT authentication and API key authentication.
 
 Permission tiers (lowest → highest):
 
-  get_current_user          — any authenticated, active user
+  get_current_user          — any authenticated, active user (JWT or API key)
   require_delivery_read     — all four roles (delivery list/detail reads)
   require_delivery_access   — DRIVER, ADMIN, or DISPATCH (delivery execution writes)
   require_office_read       — ADMIN, DISPATCH, REPORTS_ONLY; DRIVER blocked
   require_dispatch_or_admin — ADMIN or DISPATCH (manifest/invoice/report writes)
   require_office            — ADMIN or DISPATCH (office-side delivery oversight)
   require_admin             — ADMIN only (settings, trucks, users)
+
+Authentication priority:
+  1. If ``X-API-Key`` header is present → validate against api_keys table.
+  2. Otherwise → validate Bearer JWT token as before.
 
 Usage in a route::
 
@@ -29,18 +33,20 @@ Usage in a route::
         ...
 """
 
-from fastapi import Depends, HTTPException, status
+from datetime import datetime, timezone
+
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import text
 
 from delivery_manifest_backend.app.core.logger import get_logger
-from delivery_manifest_backend.app.core.security import decode_access_token
+from delivery_manifest_backend.app.core.security import decode_access_token, verify_api_key
 from delivery_manifest_backend.app.db.database import get_db_session
 
 logger = get_logger(__name__)
 
 # Tells FastAPI / Swagger UI where the token endpoint is (informational only)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 # ── Named role subsets ────────────────────────────────────────────────────────
 # Derived from VALID_ROLES (canonical in security.py).  Guard functions use
@@ -53,20 +59,106 @@ _DELIVERY_READ_ROLES  = frozenset({"DRIVER", "ADMIN", "DISPATCH", "REPORTS_ONLY"
 _DRIVER_ROLES         = frozenset({"DRIVER"})
 
 
-def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    x_api_key: str = Header(default=None, alias="X-API-Key"),
+) -> dict:
     """
-    Validate the Bearer JWT and return the corresponding user row as a dict.
+    Validate credentials and return the corresponding user (or API key) context.
+
+    Authentication priority:
+      1. If ``X-API-Key`` header is present → validate against api_keys table.
+         Returns a synthetic user dict built from the api_key row.
+      2. Otherwise → validate Bearer JWT token.
 
     Raises:
-        401 – token missing, invalid, or expired
-        401 – username claim not found in DB
-        403 – account is inactive
+        401 – no credentials provided, or invalid/expired token/key
+        403 – account is inactive or key is revoked/expired
     """
     credentials_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired token",
+        detail="Invalid or expired credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # ── Path 1: API Key ───────────────────────────────────────────────────────
+    if x_api_key:
+        # Use key_prefix (first 8 chars) to narrow to at most one candidate
+        # before running the expensive bcrypt check — avoids O(n) bcrypt scans.
+        key_prefix = x_api_key[:8]
+        db = get_db_session()
+        try:
+            result = db.execute(
+                text("""
+                    SELECT id, name, key_hash, role, is_active,
+                           created_by, expires_at
+                    FROM api_keys
+                    WHERE key_prefix = :prefix AND is_active = TRUE
+                """),
+                {"prefix": key_prefix},
+            )
+            rows = result.fetchall()
+        finally:
+            db.close()
+
+        matched = None
+        for row in rows:
+            row_dict = dict(row._mapping)
+            if verify_api_key(x_api_key, row_dict["key_hash"]):
+                matched = row_dict
+                break
+
+        if not matched:
+            logger.warning("API key authentication failed — no matching active key")
+            raise credentials_exc
+
+        if not matched["is_active"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="API key is revoked",
+            )
+
+        # Check optional expiry
+        if matched["expires_at"] is not None:
+            exp = matched["expires_at"]
+            if hasattr(exp, "tzinfo") and exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > exp:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="API key has expired",
+                )
+
+        # Update last_used_at in background (best-effort, no crash on failure)
+        try:
+            db2 = get_db_session()
+            try:
+                db2.execute(
+                    text("UPDATE api_keys SET last_used_at = NOW() WHERE id = :id"),
+                    {"id": matched["id"]},
+                )
+                db2.commit()
+            finally:
+                db2.close()
+        except Exception:
+            pass
+
+        logger.info(f"API key authenticated: '{matched['name']}' (role={matched['role']})")
+
+        # Return a synthetic user dict that looks like a normal user row
+        return {
+            "id":         matched["created_by"] or 0,
+            "username":   f"api_key:{matched['name']}",
+            "role":       matched["role"],
+            "is_active":  True,
+            "_auth_type": "api_key",
+            "_key_id":    matched["id"],
+            "_key_name":  matched["name"],
+        }
+
+    # ── Path 2: JWT Bearer Token ──────────────────────────────────────────────
+    if not token:
+        raise credentials_exc
 
     payload = decode_access_token(token)
     if not payload:

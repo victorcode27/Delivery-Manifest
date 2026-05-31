@@ -810,6 +810,23 @@ async function exportDrivers() {
     }
 }
 
+// ── Invoiced Orders KPI ───────────────────────────────────────────────────
+
+async function loadInvoicedOrders() {
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    try {
+        const res = await apiFetch(`${API_BASE}/invoiced-orders?${buildParams()}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+        set('kpi-total-invoiced-value', '£' + fmtMoney(d.total_invoiced_value));
+        set('kpi-total-invoiced-count', fmtNum(d.invoice_count));
+    } catch (e) {
+        console.error('[Analytics] Invoiced orders error:', e.message);
+        set('kpi-total-invoiced-value', '—');
+        set('kpi-total-invoiced-count', '—');
+    }
+}
+
 // ── Load Value Analysis ───────────────────────────────────────────────────
 
 async function loadValueOverview() {
@@ -949,6 +966,7 @@ function renderValueTrucksTable(rows) {
  */
 function loadAll() {
     loadOverview();
+    loadInvoicedOrders();
     loadValueOverview();
     loadTrends();
     loadManifests(0);

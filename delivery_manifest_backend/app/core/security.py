@@ -9,6 +9,7 @@ live in app/core/deps.py to avoid circular imports.
 """
 
 import hashlib
+import secrets as _secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -91,8 +92,6 @@ def validate_password_strength(password: str) -> list[str]:
 
 # ── JWT helpers ───────────────────────────────────────────────────────────────
 
-_DEFAULT_EXPIRY = timedelta(hours=8)
-
 
 def create_access_token(
     data: dict,
@@ -101,6 +100,9 @@ def create_access_token(
     """
     Create a signed HS256 JWT.
 
+    Expiry uses ``expires_delta`` when supplied, otherwise falls back to
+    ``settings.ACCESS_TOKEN_EXPIRE_MINUTES`` (configured via the .env file).
+
     Usage::
 
         token = create_access_token({"sub": user.username, "role": user.role})
@@ -108,7 +110,9 @@ def create_access_token(
     Returns a compact token string ready to send in an Authorization header.
     """
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or _DEFAULT_EXPIRY)
+    if expires_delta is None:
+        expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + expires_delta
     to_encode["exp"] = expire
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
@@ -124,3 +128,43 @@ def decode_access_token(token: str) -> Optional[dict]:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
     except JWTError:
         return None
+
+
+# ── API key helpers ───────────────────────────────────────────────────────────
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """
+    Generate a new random API key.
+
+    Returns a tuple of (raw_key, key_prefix, key_hash) where:
+      - raw_key    is the full key to give to the client once (never stored).
+      - key_prefix is the first 8 characters shown in admin UIs.
+      - key_hash   is the bcrypt hash stored in the database.
+
+    Key format:  ``dmk_<64 hex chars>``  (dmk = Delivery Manifest Key)
+    Total length: 69 characters (well within bcrypt's 72-byte limit).
+    """
+    token    = _secrets.token_hex(32)          # 64 hex chars = 256 bits of entropy
+    raw_key  = f"dmk_{token}"
+    prefix   = raw_key[:8]
+    key_hash = _bcrypt_lib.hashpw(
+        raw_key.encode("utf-8")[:_BCRYPT_MAX_BYTES],
+        _bcrypt_lib.gensalt(),
+    ).decode("utf-8")
+    return raw_key, prefix, key_hash
+
+
+def verify_api_key(raw_key: str, stored_hash: str) -> bool:
+    """
+    Verify a raw API key string against its stored bcrypt hash.
+
+    Returns True if they match, False otherwise.
+    """
+    try:
+        return _bcrypt_lib.checkpw(
+            raw_key.encode("utf-8")[:_BCRYPT_MAX_BYTES],
+            stored_hash.encode("utf-8"),
+        )
+    except Exception:
+        return False

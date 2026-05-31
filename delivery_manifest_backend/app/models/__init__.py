@@ -11,5 +11,6 @@ resolved, even if only one model file was explicitly imported elsewhere.
 
 from .user import User
 from .manifest import Manifest
+from .api_key import ApiKey
 
-__all__ = ["User", "Manifest"]
+__all__ = ["User", "Manifest", "ApiKey"]

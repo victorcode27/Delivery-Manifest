@@ -5,11 +5,12 @@ Phase 1 analytics endpoints.
 
 Routes
 ------
-  GET /api/analytics/overview    — fleet-wide KPI summary
-  GET /api/analytics/manifests   — paginated manifest-level delivery breakdown
-  GET /api/analytics/drivers     — paginated driver performance summary
-  GET /api/analytics/exceptions  — paginated FAILED/PARTIAL/RETURNED/MISSING_POD invoices
-  GET /api/analytics/aging       — unresolved invoice and manifest age buckets
+  GET /api/analytics/overview         — fleet-wide KPI summary
+  GET /api/analytics/manifests        — paginated manifest-level delivery breakdown
+  GET /api/analytics/drivers          — paginated driver performance summary
+  GET /api/analytics/exceptions       — paginated FAILED/PARTIAL/RETURNED/MISSING_POD invoices
+  GET /api/analytics/aging            — unresolved invoice and manifest age buckets
+  GET /api/analytics/invoiced-orders  — total invoiced orders received (count + value) by date_processed
 
 Auth
 ----
@@ -1124,3 +1125,59 @@ def analytics_value_trucks(
         })
 
     return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+# ── Invoiced Orders ────────────────────────────────────────────────────────────
+
+@router.get("/invoiced-orders")
+def analytics_invoiced_orders(
+    date_from: Optional[str] = None,
+    date_to:   Optional[str] = None,
+    db: Session = Depends(get_db),
+    _user = Depends(require_office_read),
+):
+    """
+    Total count and value of invoices received into the system during a date range.
+
+    Source of truth: orders table, filtered by date_processed.
+    Excludes CANCELLED orders and CREDIT_NOTE records.
+    date_to is treated as end-of-day (23:59:59) to include all records on that date.
+
+    Response
+    --------
+      invoice_count        — number of INVOICE-type orders in the period
+      total_invoiced_value — sum of orders.total_value (cast to REAL) for those orders
+    """
+    conditions: list = [
+        "COALESCE(o.type, 'INVOICE') = 'INVOICE'",
+        "COALESCE(o.status, '') != 'CANCELLED'",
+    ]
+    params: dict = {}
+
+    if date_from:
+        conditions.append("o.date_processed >= :date_from")
+        params["date_from"] = date_from
+
+    if date_to:
+        # Append end-of-day so records with a time component on date_to are included.
+        conditions.append("o.date_processed <= :date_to")
+        params["date_to"] = date_to + " 23:59:59"
+
+    where = _where(conditions)
+
+    try:
+        row = db.execute(text(f"""
+            SELECT
+                COUNT(*)                                                   AS invoice_count,
+                COALESCE(SUM(CAST(NULLIF(o.total_value, '') AS REAL)), 0)  AS total_invoiced_value
+            FROM orders o
+            {where}
+        """), params).fetchone()
+    except Exception:
+        logger.error("analytics/invoiced-orders query failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return {
+        "invoice_count":        int(row.invoice_count        or 0),
+        "total_invoiced_value": round(float(row.total_invoiced_value or 0), 2),
+    }

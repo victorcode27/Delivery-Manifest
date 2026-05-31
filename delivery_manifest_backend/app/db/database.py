@@ -393,6 +393,24 @@ def _create_tables(db) -> None:
             device_timestamp TEXT
         )
         """,
+        # ── api_keys ──────────────────────────────────────────────────────────────
+        # Static long-lived keys for AI agents and automation scripts that cannot
+        # handle JWT token refresh.  Raw key is never stored — only its bcrypt hash.
+        """
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id            SERIAL PRIMARY KEY,
+            name          TEXT NOT NULL,
+            key_prefix    TEXT NOT NULL,
+            key_hash      TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'DISPATCH'
+                          CHECK (role IN ('ADMIN', 'DISPATCH', 'REPORTS_ONLY', 'DRIVER')),
+            is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+            created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at    TIMESTAMPTZ DEFAULT NOW(),
+            last_used_at  TIMESTAMPTZ,
+            expires_at    TIMESTAMPTZ
+        )
+        """,
     ]
 
     for ddl in ddl_statements:
