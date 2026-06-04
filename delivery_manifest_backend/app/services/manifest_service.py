@@ -1191,6 +1191,7 @@ def get_outstanding_orders(
                   )
               AND o.status != ?
               AND o.type = ?
+              AND o.invoice_date >= '2026-06-01'
         """
         where_params = (INVOICE_STATUS_CANCELLED, ORDER_TYPE_INVOICE)
 

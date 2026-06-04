@@ -29,7 +29,7 @@ INPUT_FOLDER = os.getenv("INVOICE_INPUT_FOLDER", r"\\BRD-DESKTOP-ELV\storage")
 # Import cutoff: skip files whose file-system mtime is older than this date.
 # Defined here (not inside main()) so file_watcher.py can import it and apply
 # the same threshold, keeping both import paths in sync.
-IMPORT_CUTOFF_DATE = datetime.datetime(2026, 1, 23)
+IMPORT_CUTOFF_DATE = datetime.datetime(2026, 6, 1)
 
 # Filename patterns for file types that must never be imported.
 # Checked case-insensitively against the base filename before extraction.
@@ -420,6 +420,31 @@ def main():
         invoice_data = extract_invoice_data(pdf_file)
 
         if invoice_data:
+            # --- CUTOFF DATE FILTER (content-based, not file mtime) ---
+            # Strict clean-start from 2026-06-01: any invoice without a readable
+            # date is also blocked so old test data cannot enter the live database.
+            inv_date_str = invoice_data.get("invoice_date", "N/A")
+            if not inv_date_str or inv_date_str == "N/A":
+                logger.warning(
+                    f"[SKIP-DATE-N/A] No invoice date could be extracted, "
+                    f"not importing: {filename}"
+                )
+                continue
+            try:
+                inv_dt = datetime.datetime.strptime(inv_date_str, "%Y-%m-%d")
+                if inv_dt < IMPORT_CUTOFF_DATE:
+                    logger.info(
+                        f"[SKIP-DATE] Invoice date {inv_date_str} is before cutoff "
+                        f"{IMPORT_CUTOFF_DATE.strftime('%Y-%m-%d')}, skipping: {filename}"
+                    )
+                    continue
+            except ValueError:
+                logger.warning(
+                    f"[SKIP-DATE-INVALID] Unparseable invoice_date '{inv_date_str}' "
+                    f"in {filename} — not importing"
+                )
+                continue
+
             # Skip invoices where customer name could not be extracted.
             # Credit notes are exempt — their identity comes from reference_number,
             # not customer_name, so they must still be imported for CN logic to work.

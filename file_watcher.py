@@ -185,6 +185,32 @@ class FileWatcher:
             invoice_data = invoice_processor.extract_invoice_data(str(file_path))
             
             if invoice_data:
+                # --- CUTOFF DATE FILTER (content-based, not file mtime) ---
+                # Strict clean-start from 2026-06-01: any invoice without a readable
+                # date is also blocked so old test data cannot enter the live database.
+                inv_date_str = invoice_data.get("invoice_date", "N/A")
+                if not inv_date_str or inv_date_str == "N/A":
+                    logger.warning(
+                        f"[SKIP-DATE-N/A] No invoice date could be extracted, "
+                        f"not importing: {file_path.name}"
+                    )
+                    return False
+                try:
+                    inv_dt = datetime.datetime.strptime(inv_date_str, "%Y-%m-%d")
+                    if inv_dt < IMPORT_CUTOFF_DATE:
+                        logger.info(
+                            f"[SKIP-DATE] Invoice date {inv_date_str} before cutoff "
+                            f"({IMPORT_CUTOFF_DATE.strftime('%Y-%m-%d')}), "
+                            f"not importing: {file_path.name}"
+                        )
+                        return False
+                except ValueError:
+                    logger.warning(
+                        f"[SKIP-DATE-INVALID] Unparseable invoice_date '{inv_date_str}' "
+                        f"in {file_path.name} — not importing"
+                    )
+                    return False
+
                 # Skip invoices where customer name could not be extracted.
                 # Credit notes are exempt — their identity comes from reference_number.
                 if (invoice_data.get("customer_name") == "Unknown"

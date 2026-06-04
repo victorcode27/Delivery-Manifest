@@ -12,12 +12,12 @@ Usage (called from app/main.py)::
     from app.tasks.pod_tasks import start_watcher, stop_watcher
 """
 
-import logging
-import os
+import datetime
+import re
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from delivery_manifest_backend.app.core.config import settings
 from delivery_manifest_backend.app.core.logger import get_logger
@@ -49,6 +49,10 @@ class FileWatcher:
         self.known_files:  Set[str]       = set()
         self.file_sizes:   Dict[str, int] = {}
         self.last_scan_time: Optional[str] = None
+        # Pre-filter constants — overwritten from invoice_processor at init time.
+        # Defaults here ensure the watcher is always safe even if the import fails.
+        self._cutoff_ts:     float      = datetime.datetime(2026, 6, 1).timestamp()
+        self._skip_patterns: List[str]  = [r"REPRINT", r"FISCAL", r"TAX.?INVOICE"]
 
     # ── File stability ────────────────────────────────────────────────────────
 
@@ -105,6 +109,15 @@ class FileWatcher:
         from delivery_manifest_backend.app.db.database import init_db, get_db_session
         from sqlalchemy import text
 
+        # Sync cutoff and skip-pattern constants from invoice_processor so both
+        # import paths always use the same threshold.
+        try:
+            import invoice_processor  # type: ignore
+            self._cutoff_ts     = invoice_processor.IMPORT_CUTOFF_DATE.timestamp()
+            self._skip_patterns = invoice_processor.SKIP_FILENAME_PATTERNS
+        except ImportError:
+            pass  # keep __init__ defaults
+
         init_db()
         db = get_db_session()
         try:
@@ -114,14 +127,31 @@ class FileWatcher:
             db.close()
 
         folder_files = self.scan_folder()
+        skipped_old = 0
         for fp in folder_files:
             if fp.name in processed:
+                self.known_files.add(fp.name)
+                continue
+            # Mark files older than the cutoff as known so they are never polled.
+            # This prevents the watcher from running stability checks on tens of
+            # thousands of historical PDFs that will be rejected by the date gate
+            # in _process_file() anyway.
+            try:
+                if fp.stat().st_mtime < self._cutoff_ts:
+                    self.known_files.add(fp.name)
+                    skipped_old += 1
+                    continue
+            except OSError:
+                pass
+            # Mark excluded filename types (REPRINT, FISCAL, TAX INVOICE) as known.
+            if any(re.search(p, fp.name, re.IGNORECASE) for p in self._skip_patterns):
                 self.known_files.add(fp.name)
 
         missed = len(folder_files) - len(self.known_files)
         logger.info(
             f"Watcher initialised: {len(folder_files)} folder PDFs, "
-            f"{len(self.known_files)} already in DB, "
+            f"{len(self.known_files)} already known "
+            f"({len(processed)} in DB, {skipped_old} pre-cutoff/excluded), "
             f"{missed} new file(s) pending."
         )
 
@@ -145,6 +175,33 @@ class FileWatcher:
                 invoice_data = invoice_processor.extract_invoice_data(str(file_path))
                 if not invoice_data:
                     logger.error(f"[SKIP] No data extracted from {file_path.name}")
+                    return False
+
+                # --- STRICT CUTOFF DATE FILTER (content-based, not file mtime) ---
+                # Strict clean-start from 2026-06-01: missing, unparseable, or
+                # pre-cutoff invoice dates are all blocked so no old data enters
+                # the live database.
+                _cutoff = invoice_processor.IMPORT_CUTOFF_DATE.date()
+                inv_date_str = invoice_data.get("invoice_date", "N/A")
+                if not inv_date_str or inv_date_str == "N/A":
+                    logger.warning(
+                        f"[SKIP-DATE-N/A] No invoice date extracted, "
+                        f"not importing: {file_path.name}"
+                    )
+                    return False
+                try:
+                    inv_dt = datetime.date.fromisoformat(inv_date_str)
+                    if inv_dt < _cutoff:
+                        logger.info(
+                            f"[SKIP-DATE] Invoice date {inv_date_str} before cutoff "
+                            f"{_cutoff}, not importing: {file_path.name}"
+                        )
+                        return False
+                except ValueError:
+                    logger.warning(
+                        f"[SKIP-DATE-INVALID] Unparseable invoice_date '{inv_date_str}' "
+                        f"in {file_path.name} — not importing"
+                    )
                     return False
 
                 ok = add_order(invoice_data)
@@ -176,6 +233,18 @@ class FileWatcher:
 
                 for fp in current:
                     if fp.name not in self.known_files:
+                        # mtime pre-filter: silently skip old files without opening them.
+                        try:
+                            if fp.stat().st_mtime < self._cutoff_ts:
+                                self.known_files.add(fp.name)
+                                continue
+                        except OSError:
+                            pass
+                        # Filename-type filter: skip excluded file types.
+                        if any(re.search(p, fp.name, re.IGNORECASE) for p in self._skip_patterns):
+                            logger.info(f"[SKIP-TYPE] {fp.name}")
+                            self.known_files.add(fp.name)
+                            continue
                         logger.info(f"[NEW] {fp.name}")
                         if self.is_file_stable(fp):
                             self._process_file(fp)
