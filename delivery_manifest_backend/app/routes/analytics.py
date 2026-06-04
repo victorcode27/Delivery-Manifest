@@ -1200,7 +1200,14 @@ def analytics_invoiced_by_date_range(
 
     Rules
     -----
-    - Counts DISTINCT invoice_number to avoid double-counting re-imported rows
+    - Deduplicates by invoice_number before summing to prevent double-counting
+      re-imported or duplicate rows (the partial UNIQUE index on invoice_number is
+      conditional — it is skipped at startup when duplicate rows are detected, so
+      duplicate invoice_numbers are a real, known possibility in production)
+    - Takes MAX(total_value) per invoice_number group; duplicate rows for the same
+      invoice should carry the same value, so MAX is stable and avoids row-order bias
+    - Rows with invoice_number IS NULL / '' / 'N/A' are excluded before grouping
+      so they are never aggregated together under a junk key
     - Includes only type = 'INVOICE' (CREDIT_NOTE excluded)
     - Excludes invoice_date IS NULL, 'N/A', or empty string
     - Excludes status = 'CANCELLED'
@@ -1214,7 +1221,7 @@ def analytics_invoiced_by_date_range(
       date_from           — echo of the requested date_from (or null)
       date_to             — echo of the requested date_to (or null)
       invoice_count       — distinct invoice_number values in the range
-      total_invoice_value — sum of orders.total_value (cast to REAL) for those invoices
+      total_invoice_value — sum of per-invoice MAX(total_value) for those invoices
     """
     conditions: list = [
         "COALESCE(o.type, 'INVOICE') = 'INVOICE'",
@@ -1222,6 +1229,9 @@ def analytics_invoiced_by_date_range(
         "o.invoice_date IS NOT NULL",
         "o.invoice_date != 'N/A'",
         "o.invoice_date != ''",
+        "o.invoice_number IS NOT NULL",
+        "o.invoice_number != ''",
+        "o.invoice_number != 'N/A'",
     ]
     params: dict = {}
 
@@ -1237,11 +1247,18 @@ def analytics_invoiced_by_date_range(
 
     try:
         row = db.execute(text(f"""
+            WITH unique_invoices AS (
+                SELECT
+                    o.invoice_number,
+                    MAX(CAST(NULLIF(o.total_value, '') AS REAL)) AS invoice_value
+                FROM orders o
+                {where}
+                GROUP BY o.invoice_number
+            )
             SELECT
-                COUNT(DISTINCT o.invoice_number)                           AS invoice_count,
-                COALESCE(SUM(CAST(NULLIF(o.total_value, '') AS REAL)), 0)  AS total_invoice_value
-            FROM orders o
-            {where}
+                COUNT(*)                          AS invoice_count,
+                COALESCE(SUM(invoice_value), 0)   AS total_invoice_value
+            FROM unique_invoices
         """), params).fetchone()
     except Exception:
         logger.error("analytics/invoiced-by-date-range query failed", exc_info=True)
