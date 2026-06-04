@@ -827,6 +827,23 @@ async function loadInvoicedOrders() {
     }
 }
 
+// ── Invoiced by Date Range KPI ────────────────────────────────────────────
+
+async function loadInvoicedByDateRange() {
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    try {
+        const res = await apiFetch(`${API_BASE}/invoiced-by-date-range?${buildParams()}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+        set('kpi-inv-by-date-count', fmtNum(d.invoice_count));
+        set('kpi-inv-by-date-value', '£' + fmtMoney(d.total_invoice_value));
+    } catch (e) {
+        console.error('[Analytics] Invoiced by date range error:', e.message);
+        set('kpi-inv-by-date-count', '—');
+        set('kpi-inv-by-date-value', '—');
+    }
+}
+
 // ── Load Value Analysis ───────────────────────────────────────────────────
 
 async function loadValueOverview() {
@@ -967,6 +984,7 @@ function renderValueTrucksTable(rows) {
 function loadAll() {
     loadOverview();
     loadInvoicedOrders();
+    loadInvoicedByDateRange();
     loadValueOverview();
     loadTrends();
     loadManifests(0);

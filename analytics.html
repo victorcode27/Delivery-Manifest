@@ -112,6 +112,30 @@
                 </div><!-- /.section-body -->
             </section>
 
+            <!-- ── Invoices Invoiced by Date Range ───────────────────── -->
+            <section class="card collapsible-section" id="section-invoiced-by-date">
+                <div class="section-header">
+                    <h2><i data-lucide="file-text"></i> Invoices Invoiced by Date Range</h2>
+                    <span class="section-toggle-icon"><i data-lucide="chevron-down"></i></span>
+                </div>
+                <div class="section-body">
+                    <p class="section-description">
+                        Counts invoices created within the selected invoice date range (<code>orders.invoice_date</code>).
+                        This does <strong>not</strong> reflect when invoices were processed, dispatched, or delivered.
+                    </p>
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="kpi-inv-by-date-count">—</div>
+                            <div class="kpi-label">Number of Invoices Invoiced</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="kpi-inv-by-date-value">—</div>
+                            <div class="kpi-label">Total Invoiced Value</div>
+                        </div>
+                    </div>
+                </div><!-- /.section-body -->
+            </section>
+
             <!-- ── Load Value Analysis ───────────────────────────────── -->
             <section class="card collapsible-section" id="section-value">
                 <div class="section-header">

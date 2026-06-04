@@ -1181,3 +1181,75 @@ def analytics_invoiced_orders(
         "invoice_count":        int(row.invoice_count        or 0),
         "total_invoiced_value": round(float(row.total_invoiced_value or 0), 2),
     }
+
+
+# ── Invoiced by Date Range ─────────────────────────────────────────────────────
+
+@router.get("/invoiced-by-date-range")
+def analytics_invoiced_by_date_range(
+    date_from: Optional[str] = None,
+    date_to:   Optional[str] = None,
+    db: Session = Depends(get_db),
+    _user = Depends(require_office_read),
+):
+    """
+    Count and value of invoices whose invoice_date falls within a date range.
+
+    Source of truth: orders.invoice_date (the date on the invoice document itself).
+    This is NOT based on date_processed, manifest date, dispatch date, or delivery status.
+
+    Rules
+    -----
+    - Counts DISTINCT invoice_number to avoid double-counting re-imported rows
+    - Includes only type = 'INVOICE' (CREDIT_NOTE excluded)
+    - Excludes invoice_date IS NULL, 'N/A', or empty string
+    - Excludes status = 'CANCELLED'
+    - No filter on is_allocated, manifest_number, or delivery status
+
+    NOTE: invoice_date is stored as TEXT (ISO YYYY-MM-DD). Range comparisons work
+    correctly only when all stored values use that format.
+
+    Response
+    --------
+      date_from           — echo of the requested date_from (or null)
+      date_to             — echo of the requested date_to (or null)
+      invoice_count       — distinct invoice_number values in the range
+      total_invoice_value — sum of orders.total_value (cast to REAL) for those invoices
+    """
+    conditions: list = [
+        "COALESCE(o.type, 'INVOICE') = 'INVOICE'",
+        "COALESCE(o.status, '') != 'CANCELLED'",
+        "o.invoice_date IS NOT NULL",
+        "o.invoice_date != 'N/A'",
+        "o.invoice_date != ''",
+    ]
+    params: dict = {}
+
+    if date_from:
+        conditions.append("o.invoice_date >= :date_from")
+        params["date_from"] = date_from
+
+    if date_to:
+        conditions.append("o.invoice_date <= :date_to")
+        params["date_to"] = date_to
+
+    where = _where(conditions)
+
+    try:
+        row = db.execute(text(f"""
+            SELECT
+                COUNT(DISTINCT o.invoice_number)                           AS invoice_count,
+                COALESCE(SUM(CAST(NULLIF(o.total_value, '') AS REAL)), 0)  AS total_invoice_value
+            FROM orders o
+            {where}
+        """), params).fetchone()
+    except Exception:
+        logger.error("analytics/invoiced-by-date-range query failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return {
+        "date_from":           date_from,
+        "date_to":             date_to,
+        "invoice_count":       int(row.invoice_count       or 0),
+        "total_invoice_value": round(float(row.total_invoice_value or 0), 2),
+    }
