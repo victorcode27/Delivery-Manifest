@@ -51,7 +51,7 @@ class FileWatcher:
         self.last_scan_time: Optional[str] = None
         # Pre-filter constants — overwritten from invoice_processor at init time.
         # Defaults here ensure the watcher is always safe even if the import fails.
-        self._cutoff_ts:     float      = datetime.datetime(2026, 6, 1).timestamp()
+        self._cutoff_ts:     float      = datetime.datetime(2026, 6, 18).timestamp()
         self._skip_patterns: List[str]  = [r"REPRINT", r"FISCAL", r"TAX.?INVOICE"]
 
     # ── File stability ────────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ class FileWatcher:
                     return False
 
                 # --- STRICT CUTOFF DATE FILTER (content-based, not file mtime) ---
-                # Strict clean-start from 2026-06-01: missing, unparseable, or
+                # Strict clean-start from 2026-06-18: missing, unparseable, or
                 # pre-cutoff invoice dates are all blocked so no old data enters
                 # the live database.
                 _cutoff = invoice_processor.IMPORT_CUTOFF_DATE.date()

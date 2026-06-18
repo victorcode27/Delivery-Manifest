@@ -22,7 +22,7 @@ try:
     )
 except ImportError:
     WATCH_FOLDER           = os.getenv("INVOICE_INPUT_FOLDER", r"\\BRD-DESKTOP-ELV\storage")
-    IMPORT_CUTOFF_DATE     = datetime.datetime(2026, 1, 23)
+    IMPORT_CUTOFF_DATE     = datetime.datetime(2026, 6, 18)
     SKIP_FILENAME_PATTERNS = [r"REPRINT", r"FISCAL", r"TAX.?INVOICE"]
 
 # Pre-computed timestamp for fast mtime comparison in the polling loop
@@ -186,7 +186,7 @@ class FileWatcher:
             
             if invoice_data:
                 # --- CUTOFF DATE FILTER (content-based, not file mtime) ---
-                # Strict clean-start from 2026-06-01: any invoice without a readable
+                # Strict clean-start from 2026-06-18: any invoice without a readable
                 # date is also blocked so old test data cannot enter the live database.
                 inv_date_str = invoice_data.get("invoice_date", "N/A")
                 if not inv_date_str or inv_date_str == "N/A":
