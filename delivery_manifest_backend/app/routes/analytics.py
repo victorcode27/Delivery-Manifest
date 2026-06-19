@@ -613,18 +613,23 @@ def analytics_aging(
     where_sql = _where(conditions)
 
     try:
+        # currency added to SELECT + GROUP BY so a bucket's value is never a
+        # blended USD+ZWL sum — COALESCE guards older/dev rows with NULL currency.
         invoice_rows = db.execute(text(f"""
             SELECT
                 {_AGE_BUCKET}                                                      AS bucket,
+                COALESCE(ri.currency, 'USD')                                       AS currency,
                 COUNT(ri.id)                                                       AS invoice_count,
                 COALESCE(SUM(ri.value), 0)                                         AS total_value,
                 SUM(CASE WHEN COALESCE(du.status,'PENDING')='PENDING'    THEN 1 ELSE 0 END) AS pending,
                 SUM(CASE WHEN COALESCE(du.status,'PENDING')='IN_TRANSIT' THEN 1 ELSE 0 END) AS in_transit
             {_BASE_FROM}
             {where_sql}
-            GROUP BY bucket
+            GROUP BY bucket, COALESCE(ri.currency, 'USD')
         """), params).fetchall()
 
+        # manifest_count is a pure count (not a monetary sum), so it is safe
+        # to leave unsplit by currency.
         manifest_rows = db.execute(text(f"""
             SELECT
                 {_AGE_BUCKET}        AS bucket,
@@ -640,20 +645,38 @@ def analytics_aging(
 
     _BUCKETS = ["0-1", "2-3", "4-7", "8-14", "15+"]
 
-    invoice_map  = {r.bucket: r for r in invoice_rows}
+    bucket_currency_map: dict = {}
+    for r in invoice_rows:
+        bucket_currency_map.setdefault(r.bucket, []).append(r)
     manifest_map = {r.bucket: r for r in manifest_rows}
 
     invoice_aging  = []
     manifest_aging = []
 
     for b in _BUCKETS:
-        ir = invoice_map.get(b)
+        currency_rows = bucket_currency_map.get(b, [])
+        totals_by_currency = [
+            {
+                "currency":      cr.currency,
+                "invoice_count": cr.invoice_count or 0,
+                "total_value":   round(float(cr.total_value or 0), 2),
+                "pending":       cr.pending    or 0,
+                "in_transit":    cr.in_transit or 0,
+            }
+            for cr in currency_rows
+        ]
+        is_single_currency = len(totals_by_currency) == 1
+
         invoice_aging.append({
-            "bucket":        b,
-            "invoice_count": ir.invoice_count or 0 if ir else 0,
-            "total_value":   round(float(ir.total_value or 0), 2) if ir else 0.0,
-            "pending":       ir.pending    or 0 if ir else 0,
-            "in_transit":    ir.in_transit or 0 if ir else 0,
+            "bucket":             b,
+            # Safe to sum across currencies — these are counts, not money.
+            "invoice_count":      sum(c["invoice_count"] for c in totals_by_currency),
+            "pending":            sum(c["pending"]       for c in totals_by_currency),
+            "in_transit":         sum(c["in_transit"]    for c in totals_by_currency),
+            "totals_by_currency": totals_by_currency,
+            # Legacy flat total_value — only set when the bucket has a single
+            # currency. Left as None (not a blended USD+ZWL figure) when mixed.
+            "total_value": totals_by_currency[0]["total_value"] if is_single_currency else None,
         })
 
         mr = manifest_map.get(b)
@@ -884,10 +907,16 @@ def analytics_value_overview(
     current_user: dict          = Depends(require_office_read),
 ):
     """
-    Fleet-wide load value KPIs.
+    Fleet-wide load value KPIs, broken out by currency.
 
     Uses a two-level query so average/highest/lowest are computed from
-    per-manifest totals, not from the raw invoice-level rows.
+    per-(manifest, currency) totals, not from the raw invoice-level rows.
+    A single manifest can carry both USD and ZWL invoices, so the currency
+    split happens at the manifest_vals level — never just at the outer
+    aggregation — to guarantee USD and ZWL are never summed together.
+    Note: manifest_count is per-currency ("manifests carrying at least one
+    invoice in this currency"), so a mixed-currency manifest is counted once
+    under each currency it contains.
     """
     conditions: list = []
     params:     dict = {}
@@ -898,36 +927,58 @@ def analytics_value_overview(
     where_sql = _where(conditions)
 
     try:
-        row = db.execute(text(f"""
+        rows = db.execute(text(f"""
             WITH manifest_vals AS (
                 SELECT
                     r.id,
-                    COALESCE(SUM(ri.value), 0) AS manifest_value,
-                    COUNT(ri.id)               AS invoice_count
+                    COALESCE(ri.currency, 'USD') AS currency,
+                    COALESCE(SUM(ri.value), 0)   AS manifest_value,
+                    COUNT(ri.id)                 AS invoice_count
                 {_VALUE_FROM}
                 {where_sql}
-                GROUP BY r.id
+                GROUP BY r.id, COALESCE(ri.currency, 'USD')
             )
             SELECT
-                COALESCE(SUM(manifest_value), 0) AS total_dispatched_value,
+                currency,
                 COUNT(*)                          AS manifest_count,
-                COALESCE(SUM(invoice_count), 0)  AS invoice_count,
-                COALESCE(AVG(manifest_value), 0) AS average_manifest_value,
-                COALESCE(MAX(manifest_value), 0) AS highest_manifest_value,
-                COALESCE(MIN(manifest_value), 0) AS lowest_manifest_value
+                COALESCE(SUM(invoice_count), 0)   AS invoice_count,
+                COALESCE(SUM(manifest_value), 0)  AS total_value,
+                COALESCE(AVG(manifest_value), 0)  AS average_manifest_value,
+                COALESCE(MAX(manifest_value), 0)  AS highest_manifest_value,
+                COALESCE(MIN(manifest_value), 0)  AS lowest_manifest_value
             FROM manifest_vals
-        """), params).fetchone()
+            GROUP BY currency
+            ORDER BY currency
+        """), params).fetchall()
     except Exception:
         logger.error("analytics/value-overview query failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
+    totals_by_currency = [
+        {
+            "currency":               r.currency,
+            "manifest_count":         int(r.manifest_count or 0),
+            "invoice_count":          int(r.invoice_count or 0),
+            "total_value":            round(float(r.total_value or 0), 2),
+            "average_manifest_value": round(float(r.average_manifest_value or 0), 2),
+            "highest_manifest_value": round(float(r.highest_manifest_value or 0), 2),
+            "lowest_manifest_value":  round(float(r.lowest_manifest_value or 0), 2),
+        }
+        for r in rows
+    ]
+    single = len(totals_by_currency) == 1
+
     return {
-        "total_dispatched_value":  round(float(row.total_dispatched_value  or 0), 2),
-        "manifest_count":          int(row.manifest_count                   or 0),
-        "invoice_count":           int(row.invoice_count                    or 0),
-        "average_manifest_value":  round(float(row.average_manifest_value  or 0), 2),
-        "highest_manifest_value":  round(float(row.highest_manifest_value  or 0), 2),
-        "lowest_manifest_value":   round(float(row.lowest_manifest_value   or 0), 2),
+        "totals_by_currency": totals_by_currency,
+        # Legacy flat fields — populated only when every matched manifest
+        # shares one currency. Left as None (never a blended USD+ZWL figure)
+        # when multiple currencies are present.
+        "total_dispatched_value":  totals_by_currency[0]["total_value"]            if single else None,
+        "manifest_count":          totals_by_currency[0]["manifest_count"]         if single else None,
+        "invoice_count":           totals_by_currency[0]["invoice_count"]          if single else None,
+        "average_manifest_value":  totals_by_currency[0]["average_manifest_value"] if single else None,
+        "highest_manifest_value":  totals_by_currency[0]["highest_manifest_value"] if single else None,
+        "lowest_manifest_value":   totals_by_currency[0]["lowest_manifest_value"]  if single else None,
     }
 
 
@@ -947,10 +998,12 @@ def analytics_value_manifests(
     current_user: dict        = Depends(require_office_read),
 ):
     """
-    Paginated per-manifest load value breakdown.
+    Paginated per-manifest load value breakdown, split by currency.
 
-    One row per manifest. manifest_value = SUM(ri.value).
-    average_invoice_value computed server-side as manifest_value / invoice_count.
+    Pagination operates at the manifest level (one page row per manifest),
+    so the value breakdown is fetched in a second query for just that page's
+    manifest IDs and nested under totals_by_currency — a manifest with both
+    USD and ZWL invoices is one row in the page, with two currency entries.
     Driver display uses r.driver text with 'Unassigned' fallback (same as manifests endpoint).
     Truck display uses COALESCE(NULLIF(TRIM(r.reg_number),''), 'Unassigned').
     """
@@ -975,20 +1028,19 @@ def analytics_value_manifests(
 
     where_sql = _where(conditions)
 
-    agg_cte = f"""
+    # Manifest identity rows — one per manifest, no value summed here, so
+    # pagination/ordering is unaffected by currency.
+    manifest_ids_cte = f"""
         SELECT
-            r.id                                                         AS report_id,
+            r.id                                                   AS report_id,
             r.manifest_number,
-            r.date_dispatched                                            AS dispatch_date,
-            COALESCE(NULLIF(TRIM(r.reg_number), ''), 'Unassigned')       AS truck,
+            r.date_dispatched                                      AS dispatch_date,
+            COALESCE(NULLIF(TRIM(r.reg_number), ''), 'Unassigned') AS truck,
             r.driver,
-            MIN(cr.route_name)                                           AS route,
-            COUNT(ri.id)                                                 AS invoice_count,
-            COALESCE(SUM(ri.value), 0)                                   AS manifest_value
+            MIN(cr.route_name)                                     AS route
         {_VALUE_FROM}
         {where_sql}
-        GROUP BY r.id, r.manifest_number, r.date_dispatched,
-                 r.reg_number, r.driver
+        GROUP BY r.id, r.manifest_number, r.date_dispatched, r.reg_number, r.driver
     """
 
     try:
@@ -998,32 +1050,63 @@ def analytics_value_manifests(
             {where_sql}
         """), params).scalar() or 0
 
-        rows = db.execute(text(f"""
-            WITH agg AS ({agg_cte})
-            SELECT *,
-                CASE WHEN invoice_count > 0
-                     THEN manifest_value / invoice_count
-                     ELSE 0 END AS average_invoice_value
-            FROM agg
+        page_rows = db.execute(text(f"""
+            WITH agg AS ({manifest_ids_cte})
+            SELECT * FROM agg
             ORDER BY dispatch_date DESC NULLS LAST, manifest_number DESC
             LIMIT :limit OFFSET :offset
         """), {**params, "limit": page_size, "offset": offset}).fetchall()
+
+        report_ids = [r.report_id for r in page_rows]
+        currency_rows = []
+        if report_ids:
+            id_ph     = ", ".join(f":id{i}" for i in range(len(report_ids)))
+            id_params = {f"id{i}": rid for i, rid in enumerate(report_ids)}
+            currency_rows = db.execute(text(f"""
+                SELECT
+                    r.id                          AS report_id,
+                    COALESCE(ri.currency, 'USD')  AS currency,
+                    COUNT(ri.id)                  AS invoice_count,
+                    COALESCE(SUM(ri.value), 0)    AS manifest_value
+                FROM reports r
+                JOIN report_items ri ON ri.report_id = r.id
+                WHERE r.id IN ({id_ph})
+                GROUP BY r.id, COALESCE(ri.currency, 'USD')
+            """), id_params).fetchall()
 
     except Exception:
         logger.error("analytics/value-manifests query failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
+    by_report: dict = {}
+    for cr in currency_rows:
+        invoice_count = int(cr.invoice_count or 0)
+        manifest_value = round(float(cr.manifest_value or 0), 2)
+        by_report.setdefault(cr.report_id, []).append({
+            "currency":               cr.currency,
+            "invoice_count":          invoice_count,
+            "total_value":            manifest_value,
+            "average_invoice_value":  round(manifest_value / invoice_count, 2) if invoice_count else 0.0,
+        })
+
     items = []
-    for r in rows:
+    for r in page_rows:
+        totals_by_currency = by_report.get(r.report_id, [])
+        single = len(totals_by_currency) == 1
+
         items.append({
             "manifest_number":       r.manifest_number,
             "dispatch_date":         r.dispatch_date,
             "truck":                 r.truck,
             "driver":                r.driver or 'Unassigned',
             "route":                 r.route  or '—',
-            "invoice_count":         int(r.invoice_count          or 0),
-            "manifest_value":        round(float(r.manifest_value        or 0), 2),
-            "average_invoice_value": round(float(r.average_invoice_value or 0), 2),
+            "totals_by_currency":    totals_by_currency,
+            # Legacy flat fields — populated only when this manifest's invoices
+            # share a single currency. Left as None (never a blended USD+ZWL
+            # figure) when the manifest mixes currencies.
+            "invoice_count":         totals_by_currency[0]["invoice_count"]        if single else None,
+            "manifest_value":        totals_by_currency[0]["total_value"]          if single else None,
+            "average_invoice_value": totals_by_currency[0]["average_invoice_value"] if single else None,
         })
 
     return {"total": total, "page": page, "page_size": page_size, "items": items}
@@ -1045,12 +1128,16 @@ def analytics_value_trucks(
     current_user: dict        = Depends(require_office_read),
 ):
     """
-    Paginated per-truck load value aggregation.
+    Paginated per-truck load value aggregation, split by currency.
 
-    Two-level CTE:
-      1. manifest_vals — one row per manifest, with truck fallback applied
-      2. truck_agg    — group manifests by truck for count/sum/avg/min/max
-    Search filters on the resolved truck label in the outer query.
+    Three-level approach:
+      1. manifest_vals — one row per (manifest, currency), truck fallback applied
+      2. truck_agg     — group by (truck, currency) for count/sum/avg/min/max
+      3. Page is selected over distinct trucks, ordered by total invoices
+         carried (a count, safe to sum across currencies) — never by a
+         blended monetary total. The per-currency breakdown is then nested
+         under each truck for just that page's trucks.
+    Search filters on the resolved truck label.
     """
     page      = max(1, page)
     page_size = max(1, min(200, page_size))
@@ -1067,16 +1154,18 @@ def analytics_value_trucks(
     manifest_vals_cte = f"""
         SELECT
             COALESCE(NULLIF(TRIM(r.reg_number), ''), 'Unassigned') AS truck,
-            COALESCE(SUM(ri.value), 0)                             AS manifest_value,
-            COUNT(ri.id)                                           AS invoice_count
+            COALESCE(ri.currency, 'USD')                            AS currency,
+            COALESCE(SUM(ri.value), 0)                              AS manifest_value,
+            COUNT(ri.id)                                            AS invoice_count
         {_VALUE_FROM}
         {where_sql}
-        GROUP BY r.id, r.reg_number
+        GROUP BY r.id, r.reg_number, COALESCE(ri.currency, 'USD')
     """
 
     truck_agg_cte = """
         SELECT
             truck,
+            currency,
             COUNT(*)                                  AS manifests_assigned,
             COALESCE(SUM(invoice_count), 0)           AS invoices_carried,
             COALESCE(SUM(manifest_value), 0)          AS total_value_carried,
@@ -1084,7 +1173,22 @@ def analytics_value_trucks(
             COALESCE(MAX(manifest_value), 0)          AS highest_manifest_value,
             COALESCE(MIN(manifest_value), 0)          AS lowest_manifest_value
         FROM manifest_vals
-        GROUP BY truck
+        GROUP BY truck, currency
+    """
+
+    # True per-truck counts computed directly from the raw joined rows
+    # (NOT from manifest_vals_cte) — a manifest carrying both USD and ZWL
+    # invoices appears as two rows in manifest_vals_cte (one per currency),
+    # so summing/counting from there would double-count it. This query counts
+    # each manifest and invoice exactly once, regardless of currency mix.
+    trucks_summary_cte = f"""
+        SELECT
+            COALESCE(NULLIF(TRIM(r.reg_number), ''), 'Unassigned') AS truck,
+            COUNT(DISTINCT r.id)                                    AS manifests_assigned,
+            COUNT(ri.id)                                            AS invoices_carried
+        {_VALUE_FROM}
+        {where_sql}
+        GROUP BY r.reg_number
     """
 
     search_where = ""
@@ -1094,34 +1198,65 @@ def analytics_value_trucks(
 
     try:
         total = db.execute(text(f"""
-            WITH manifest_vals AS ({manifest_vals_cte}),
-            truck_agg AS ({truck_agg_cte})
-            SELECT COUNT(*) FROM truck_agg {search_where}
+            WITH trucks_summary AS ({trucks_summary_cte})
+            SELECT COUNT(*) FROM trucks_summary {search_where}
         """), params).scalar() or 0
 
-        rows = db.execute(text(f"""
-            WITH manifest_vals AS ({manifest_vals_cte}),
-            truck_agg AS ({truck_agg_cte})
-            SELECT * FROM truck_agg
+        truck_page = db.execute(text(f"""
+            WITH trucks_summary AS ({trucks_summary_cte})
+            SELECT * FROM trucks_summary
             {search_where}
-            ORDER BY total_value_carried DESC
+            ORDER BY invoices_carried DESC
             LIMIT :limit OFFSET :offset
         """), {**params, "limit": page_size, "offset": offset}).fetchall()
+
+        trucks = [r.truck for r in truck_page]
+        truck_summary_map = {r.truck: r for r in truck_page}
+        currency_rows = []
+        if trucks:
+            truck_ph     = ", ".join(f":t{i}" for i in range(len(trucks)))
+            truck_params = {f"t{i}": t for i, t in enumerate(trucks)}
+            currency_rows = db.execute(text(f"""
+                WITH manifest_vals AS ({manifest_vals_cte}),
+                truck_agg AS ({truck_agg_cte})
+                SELECT * FROM truck_agg
+                WHERE truck IN ({truck_ph})
+            """), {**params, **truck_params}).fetchall()
 
     except Exception:
         logger.error("analytics/value-trucks query failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
+    by_truck: dict = {}
+    for cr in currency_rows:
+        by_truck.setdefault(cr.truck, []).append({
+            "currency":               cr.currency,
+            "invoice_count":          int(cr.invoices_carried or 0),
+            "total_value":            round(float(cr.total_value_carried or 0), 2),
+            "average_manifest_value": round(float(cr.average_manifest_value or 0), 2),
+            "highest_manifest_value": round(float(cr.highest_manifest_value or 0), 2),
+            "lowest_manifest_value":  round(float(cr.lowest_manifest_value or 0), 2),
+        })
+
     items = []
-    for r in rows:
+    for truck in trucks:
+        totals_by_currency = by_truck.get(truck, [])
+        single  = len(totals_by_currency) == 1
+        summary = truck_summary_map.get(truck)
+
         items.append({
-            "truck":                  r.truck,
-            "manifests_assigned":     int(r.manifests_assigned     or 0),
-            "invoices_carried":       int(r.invoices_carried       or 0),
-            "total_value_carried":    round(float(r.total_value_carried    or 0), 2),
-            "average_manifest_value": round(float(r.average_manifest_value or 0), 2),
-            "highest_manifest_value": round(float(r.highest_manifest_value or 0), 2),
-            "lowest_manifest_value":  round(float(r.lowest_manifest_value  or 0), 2),
+            "truck":                  truck,
+            # True counts (not inflated by currency split) — see trucks_summary_cte.
+            "manifests_assigned":     int(summary.manifests_assigned or 0) if summary else 0,
+            "invoices_carried":       int(summary.invoices_carried   or 0) if summary else 0,
+            "totals_by_currency":     totals_by_currency,
+            # Legacy flat fields — populated only when this truck's loads are
+            # all one currency. Left as None (never a blended USD+ZWL figure)
+            # when the truck has carried multiple currencies.
+            "total_value_carried":    totals_by_currency[0]["total_value"]            if single else None,
+            "average_manifest_value": totals_by_currency[0]["average_manifest_value"] if single else None,
+            "highest_manifest_value": totals_by_currency[0]["highest_manifest_value"] if single else None,
+            "lowest_manifest_value":  totals_by_currency[0]["lowest_manifest_value"]  if single else None,
         })
 
     return {"total": total, "page": page, "page_size": page_size, "items": items}
@@ -1137,7 +1272,8 @@ def analytics_invoiced_orders(
     _user = Depends(require_office_read),
 ):
     """
-    Total count and value of invoices received into the system during a date range.
+    Count and value of invoices received into the system during a date range,
+    split by currency.
 
     Source of truth: orders table, filtered by date_processed.
     Excludes CANCELLED orders and CREDIT_NOTE records.
@@ -1145,8 +1281,9 @@ def analytics_invoiced_orders(
 
     Response
     --------
-      invoice_count        — number of INVOICE-type orders in the period
-      total_invoiced_value — sum of orders.total_value (cast to REAL) for those orders
+      totals_by_currency   — list of {currency, invoice_count, total_value}
+      invoice_count         — legacy flat field, only set when a single currency is present
+      total_invoiced_value  — legacy flat field, only set when a single currency is present
     """
     conditions: list = [
         "COALESCE(o.type, 'INVOICE') = 'INVOICE'",
@@ -1166,20 +1303,36 @@ def analytics_invoiced_orders(
     where = _where(conditions)
 
     try:
-        row = db.execute(text(f"""
+        rows = db.execute(text(f"""
             SELECT
+                COALESCE(o.currency, 'USD')                                AS currency,
                 COUNT(*)                                                   AS invoice_count,
-                COALESCE(SUM(CAST(NULLIF(o.total_value, '') AS REAL)), 0)  AS total_invoiced_value
+                COALESCE(SUM(CAST(NULLIF(o.total_value, '') AS REAL)), 0)  AS total_value
             FROM orders o
             {where}
-        """), params).fetchone()
+            GROUP BY COALESCE(o.currency, 'USD')
+            ORDER BY currency
+        """), params).fetchall()
     except Exception:
         logger.error("analytics/invoiced-orders query failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
+    totals_by_currency = [
+        {
+            "currency":      r.currency,
+            "invoice_count": int(r.invoice_count or 0),
+            "total_value":   round(float(r.total_value or 0), 2),
+        }
+        for r in rows
+    ]
+    single = len(totals_by_currency) == 1
+
     return {
-        "invoice_count":        int(row.invoice_count        or 0),
-        "total_invoiced_value": round(float(row.total_invoiced_value or 0), 2),
+        "totals_by_currency": totals_by_currency,
+        # Legacy flat fields — populated only when every matched order shares
+        # one currency. Left as None (never a blended USD+ZWL figure) when mixed.
+        "invoice_count":        totals_by_currency[0]["invoice_count"] if single else None,
+        "total_invoiced_value": totals_by_currency[0]["total_value"]   if single else None,
     }
 
 
@@ -1193,7 +1346,8 @@ def analytics_invoiced_by_date_range(
     _user = Depends(require_office_read),
 ):
     """
-    Count and value of invoices whose invoice_date falls within a date range.
+    Count and value of invoices whose invoice_date falls within a date range,
+    split by currency.
 
     Source of truth: orders.invoice_date (the date on the invoice document itself).
     This is NOT based on date_processed, manifest date, dispatch date, or delivery status.
@@ -1204,24 +1358,28 @@ def analytics_invoiced_by_date_range(
       re-imported or duplicate rows (the partial UNIQUE index on invoice_number is
       conditional — it is skipped at startup when duplicate rows are detected, so
       duplicate invoice_numbers are a real, known possibility in production)
-    - Takes MAX(total_value) per invoice_number group; duplicate rows for the same
-      invoice should carry the same value, so MAX is stable and avoids row-order bias
+    - Takes MAX(total_value) and MAX(currency) per invoice_number group; duplicate
+      rows for the same invoice should carry the same value and currency, so MAX is
+      stable and avoids row-order bias for both
     - Rows with invoice_number IS NULL / '' / 'N/A' are excluded before grouping
       so they are never aggregated together under a junk key
     - Includes only type = 'INVOICE' (CREDIT_NOTE excluded)
     - Excludes invoice_date IS NULL, 'N/A', or empty string
     - Excludes status = 'CANCELLED'
     - No filter on is_allocated, manifest_number, or delivery status
+    - Totals are grouped by the deduplicated invoice's currency — USD and ZWL
+      are never summed together
 
     NOTE: invoice_date is stored as TEXT (ISO YYYY-MM-DD). Range comparisons work
     correctly only when all stored values use that format.
 
     Response
     --------
-      date_from           — echo of the requested date_from (or null)
-      date_to             — echo of the requested date_to (or null)
-      invoice_count       — distinct invoice_number values in the range
-      total_invoice_value — sum of per-invoice MAX(total_value) for those invoices
+      date_from            — echo of the requested date_from (or null)
+      date_to              — echo of the requested date_to (or null)
+      totals_by_currency    — list of {currency, invoice_count, total_value}
+      invoice_count         — legacy flat field, only set when a single currency is present
+      total_invoice_value   — legacy flat field, only set when a single currency is present
     """
     conditions: list = [
         "COALESCE(o.type, 'INVOICE') = 'INVOICE'",
@@ -1246,27 +1404,45 @@ def analytics_invoiced_by_date_range(
     where = _where(conditions)
 
     try:
-        row = db.execute(text(f"""
+        rows = db.execute(text(f"""
             WITH unique_invoices AS (
                 SELECT
                     o.invoice_number,
-                    MAX(CAST(NULLIF(o.total_value, '') AS REAL)) AS invoice_value
+                    MAX(CAST(NULLIF(o.total_value, '') AS REAL)) AS invoice_value,
+                    MAX(COALESCE(o.currency, 'USD'))              AS currency
                 FROM orders o
                 {where}
                 GROUP BY o.invoice_number
             )
             SELECT
+                currency,
                 COUNT(*)                          AS invoice_count,
-                COALESCE(SUM(invoice_value), 0)   AS total_invoice_value
+                COALESCE(SUM(invoice_value), 0)   AS total_value
             FROM unique_invoices
-        """), params).fetchone()
+            GROUP BY currency
+            ORDER BY currency
+        """), params).fetchall()
     except Exception:
         logger.error("analytics/invoiced-by-date-range query failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
+    totals_by_currency = [
+        {
+            "currency":      r.currency,
+            "invoice_count": int(r.invoice_count or 0),
+            "total_value":   round(float(r.total_value or 0), 2),
+        }
+        for r in rows
+    ]
+    single = len(totals_by_currency) == 1
+
     return {
         "date_from":           date_from,
         "date_to":             date_to,
-        "invoice_count":       int(row.invoice_count       or 0),
-        "total_invoice_value": round(float(row.total_invoice_value or 0), 2),
+        "totals_by_currency":  totals_by_currency,
+        # Legacy flat fields — populated only when every deduplicated invoice
+        # in range shares one currency. Left as None (never a blended USD+ZWL
+        # figure) when mixed.
+        "invoice_count":       totals_by_currency[0]["invoice_count"] if single else None,
+        "total_invoice_value": totals_by_currency[0]["total_value"]   if single else None,
     }

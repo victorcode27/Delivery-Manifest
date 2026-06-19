@@ -55,6 +55,8 @@ async function submitManualEntry() {
     const customer = document.getElementById('manual-customer-name').value.trim();
     const customerNumber = document.getElementById('manual-customer-number').value.trim();
     const value = document.getElementById('manual-total-value').value;
+    const currencyEl = document.getElementById('manual-currency');
+    const currency = currencyEl ? currencyEl.value : 'USD';
     const area = document.getElementById('manual-area').value.trim();
 
     if (!invoiceNum || !orderNum || !customer || !value) {
@@ -72,6 +74,7 @@ async function submitManualEntry() {
                 customer_name: customer,
                 customer_number: customerNumber,
                 total_value: value,
+                currency: currency,
                 area: area || "UNKNOWN"
             })
         });
@@ -84,6 +87,7 @@ async function submitManualEntry() {
             document.getElementById('manual-customer-name').value = '';
             document.getElementById('manual-customer-number').value = '';
             document.getElementById('manual-total-value').value = '';
+            if (currencyEl) currencyEl.value = 'USD';
             document.getElementById('manual-area').value = '';
 
             // Refresh main list if viewing it

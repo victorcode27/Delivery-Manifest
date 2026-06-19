@@ -24,6 +24,7 @@ from delivery_manifest_backend.app.core.constants import (
     ORDER_TYPE_INVOICE, ORDER_TYPE_CREDIT_NOTE,
     INVOICE_STATUS_PENDING, INVOICE_STATUS_CANCELLED,
     INVOICE_STATUS_PROCESSED, INVOICE_STATUS_ORPHAN,
+    VALID_CURRENCIES, DEFAULT_CURRENCY,
 )
 from delivery_manifest_backend.app.core.logger import get_logger
 
@@ -32,6 +33,18 @@ logger = get_logger(__name__)
 # Serialises invoice‐import operations so the file watcher and the manual
 # refresh endpoint cannot process the same folder concurrently.
 _import_lock = threading.Lock()
+
+
+def _normalize_currency(value) -> str:
+    """
+    Return *value* uppercased if it is a recognised currency (USD/ZWL),
+    otherwise DEFAULT_CURRENCY.  Never raises — write paths (add_order,
+    manual invoice creation, save_report) must never be blocked by a
+    missing or malformed currency value.
+    """
+    if isinstance(value, str) and value.strip().upper() in VALID_CURRENCIES:
+        return value.strip().upper()
+    return DEFAULT_CURRENCY
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -149,10 +162,23 @@ def _apply_credit_note(cn: Dict, invoice: Dict) -> bool:
     cancels the invoice (full) or reduces its total_value (partial).
     Marks the credit note as PROCESSED in both cases.
 
-    Returns True if reconciliation succeeded, False on value-parse error.
+    Returns True if reconciliation succeeded, False on value-parse error
+    or currency mismatch (currencies are never converted, so a CN cannot
+    be reconciled against an invoice issued in a different currency — it
+    is left unreconciled for manual review instead).
     """
     cn_number  = cn.get("invoice_number", "?")
     inv_number = invoice.get("invoice_number", "?")
+
+    cn_currency      = _normalize_currency(cn.get("currency"))
+    invoice_currency = _normalize_currency(invoice.get("currency"))
+    if cn_currency != invoice_currency:
+        logger.error(
+            f"[Reconcile] Currency mismatch — CN {cn_number} is {cn_currency} but "
+            f"Invoice {inv_number} is {invoice_currency}. Skipping automatic "
+            f"reconciliation (no currency conversion); leaving CN for manual review."
+        )
+        return False
 
     try:
         credit_val  = float(str(cn["total_value"]).replace(",", "").replace("$", "").strip())
@@ -323,8 +349,9 @@ def add_order(order_data: Dict) -> bool:
             INSERT INTO orders
                 (filename, date_processed, customer_name, total_value,
                  order_number, invoice_number, invoice_date, area,
-                 type, reference_number, original_value, status, customer_number)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 type, reference_number, original_value, status, customer_number,
+                 currency)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order_data.get("filename"),
@@ -340,6 +367,7 @@ def add_order(order_data: Dict) -> bool:
                 order_data.get("original_value"),
                 order_data.get("status", INVOICE_STATUS_PENDING),
                 order_data.get("customer_number", "N/A"),
+                _normalize_currency(order_data.get("currency")),
             ),
         )
         db.commit()
@@ -449,6 +477,11 @@ def cancel_order(invoice_number: str) -> bool:
 def update_order_value(
     invoice_number: str, new_value: str, original_value: Optional[str] = None
 ) -> bool:
+    """
+    Update total_value (and optionally original_value) for partial-credit
+    adjustments.  Intentionally never touches orders.currency — a credit
+    note adjusts the amount, not the currency the invoice was issued in.
+    """
     db = get_db_session()
     try:
         if original_value:
@@ -871,7 +904,7 @@ def save_report(report_data: Dict) -> dict:
             """
             SELECT o.id, o.filename, o.invoice_number, o.order_number,
                    o.customer_name, o.invoice_date, o.area, o.customer_number,
-                   o.total_value
+                   o.total_value, o.currency
             FROM orders o
             INNER JOIN manifest_staging ms ON ms.invoice_id = o.id
             WHERE ms.session_id = ?
@@ -898,7 +931,19 @@ def save_report(report_data: Dict) -> dict:
                 frontend_map[key] = inv
 
         # ── Compute total_value from DB rows (authoritative) ─────────────
-        db_total_value = sum(_parse_value(inv["total_value"]) for inv in staged_invoices)
+        # reports.total_value has no currency of its own — a manifest mixing
+        # USD and ZWL invoices must not store a single blended figure (same
+        # rule Stage 4 applies on the analytics read side). Only populate it
+        # when every staged invoice shares one currency; otherwise NULL.
+        staged_currencies = {_normalize_currency(inv.get("currency")) for inv in staged_invoices}
+        if len(staged_currencies) == 1:
+            db_total_value = sum(_parse_value(inv["total_value"]) for inv in staged_invoices)
+        else:
+            db_total_value = None
+            logger.info(
+                f"[SaveReport] Manifest spans multiple currencies {sorted(staged_currencies)} — "
+                f"reports.total_value left NULL (see report_items.currency for the breakdown)."
+            )
 
         # ── Build line items; derive aggregate SKU/weight from saved lines ─
         # value comes from the DB orders.total_value (authoritative).
@@ -918,6 +963,7 @@ def save_report(report_data: Dict) -> dict:
                 "invoice_date":    inv["invoice_date"]    or "N/A",
                 "area":            inv["area"]            or "UNKNOWN",
                 "customer_number": inv["customer_number"] or "N/A",
+                "currency":        _normalize_currency(inv.get("currency")),  # from DB — authoritative
                 "sku":    int(fe.get("sku",    0) or 0),
                 "value":  _parse_value(inv["total_value"]),  # from DB — authoritative
                 "weight": float(fe.get("weight", 0) or 0),
@@ -988,8 +1034,9 @@ def save_report(report_data: Dict) -> dict:
                 """
                 INSERT INTO report_items
                     (report_id, invoice_number, order_number, customer_name,
-                     invoice_date, area, sku, value, weight, customer_number)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     invoice_date, area, sku, value, weight, customer_number,
+                     currency)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     report_id,
@@ -1002,6 +1049,7 @@ def save_report(report_data: Dict) -> dict:
                     item["value"],
                     item["weight"],
                     item["customer_number"],
+                    item["currency"],
                 ),
             )
 
@@ -1314,6 +1362,7 @@ def create_manual_invoice(
     order_number:    str,
     customer_number: str,
     area:            str,
+    currency:        str = DEFAULT_CURRENCY,
 ) -> Optional[str]:
     """
     Build and insert a manual invoice entry.
@@ -1334,6 +1383,7 @@ def create_manual_invoice(
             "customer_number": customer_number,
             "invoice_date":    datetime.now().strftime("%Y-%m-%d"),
             "area":            area,
+            "currency":        currency,  # normalized inside add_order()
         }
     )
     return filename if ok else None
@@ -1347,6 +1397,7 @@ def create_manual_invoice_and_stage(
     order_number:    str,
     customer_number: str,
     area:            str,
+    currency:        str = DEFAULT_CURRENCY,
 ) -> Optional[str]:
     """
     Atomically insert a manual invoice and stage it for *session_id*.
@@ -1382,8 +1433,9 @@ def create_manual_invoice_and_stage(
             INSERT INTO orders
                 (filename, date_processed, customer_name, total_value,
                  order_number, invoice_number, invoice_date, area,
-                 type, reference_number, original_value, status, customer_number)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 type, reference_number, original_value, status, customer_number,
+                 currency)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 filename,
@@ -1399,6 +1451,7 @@ def create_manual_invoice_and_stage(
                 None,
                 INVOICE_STATUS_PENDING,
                 customer_number,
+                _normalize_currency(currency),
             ),
         ).fetchone()
 

@@ -9,7 +9,7 @@ from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel, validator
 
-from delivery_manifest_backend.app.core.constants import DELIVERY_MODES
+from delivery_manifest_backend.app.core.constants import DELIVERY_MODES, VALID_CURRENCIES
 
 
 # ── Uploaded manifest files ────────────────────────────────────────────────────
@@ -41,6 +41,7 @@ class InvoiceOut(BaseModel):
     date_processed:  str
     customer_name:   str
     total_value:     str
+    currency:        Optional[str] = "USD"
     order_number:    str
     invoice_number:  Optional[str] = "N/A"
     customer_number: Optional[str] = "N/A"
@@ -56,6 +57,16 @@ class ManualInvoiceRequest(BaseModel):
     order_number:    str
     customer_number: Optional[str] = "N/A"
     area:            Optional[str] = "UNKNOWN"
+    currency:        Optional[str] = "USD"
+
+    @validator("currency")
+    def _valid_currency(cls, v: Optional[str]) -> str:
+        if v is None or not v.strip():
+            return "USD"
+        v_upper = v.strip().upper()
+        if v_upper not in VALID_CURRENCIES:
+            raise ValueError(f"currency must be one of: {', '.join(VALID_CURRENCIES)}")
+        return v_upper
 
 
 # ── Staging / allocation ───────────────────────────────────────────────────────
@@ -84,6 +95,7 @@ class ReportInvoiceItem(BaseModel):
     sku:          int             = 0
     value:        float           = 0
     total_value:  Optional[float] = 0
+    currency:     Optional[str]   = "USD"  # informational only — save_report() uses orders.currency
     weight:       float           = 0
 
 

@@ -100,10 +100,11 @@ def init_db():
             reference_number TEXT,
             original_value TEXT,
             status TEXT DEFAULT 'PENDING',
-            customer_number TEXT DEFAULT 'N/A'  -- Added Customer Number
+            customer_number TEXT DEFAULT 'N/A',  -- Added Customer Number
+            currency TEXT DEFAULT 'USD'  -- Added Currency Support
         )
     ''')
-    
+
     # Check if we need to migrate existing table (add new columns if missing)
     try:
         result = execute_sqlite_wrapper(db, "SELECT customer_number FROM orders LIMIT 1")
@@ -111,6 +112,15 @@ def init_db():
         print("Migrating database: Adding customer_number column...")
         try:
             result = execute_sqlite_wrapper(db, "ALTER TABLE orders ADD COLUMN customer_number TEXT DEFAULT 'N/A'")
+        except Exception as e:
+            print(f"Migration warning: {e}")
+
+    try:
+        result = execute_sqlite_wrapper(db, "SELECT currency FROM orders LIMIT 1")
+    except OperationalError:
+        print("Migrating database: Adding currency column to orders...")
+        try:
+            result = execute_sqlite_wrapper(db, "ALTER TABLE orders ADD COLUMN currency TEXT DEFAULT 'USD'")
         except Exception as e:
             print(f"Migration warning: {e}")
 
@@ -131,11 +141,12 @@ def init_db():
             area TEXT,
             sku INTEGER DEFAULT 0,
             value REAL DEFAULT 0,
+            currency TEXT DEFAULT 'USD',  -- Added Currency Support
             weight REAL DEFAULT 0,
             FOREIGN KEY (report_id) REFERENCES reports(id)
         )
     ''')
-    
+
     # Add migration for report_items too
     try:
         result = execute_sqlite_wrapper(db, "SELECT customer_number FROM report_items LIMIT 1")
@@ -143,6 +154,15 @@ def init_db():
         print("Migrating database: Adding customer_number to report_items...")
         try:
             result = execute_sqlite_wrapper(db, "ALTER TABLE report_items ADD COLUMN customer_number TEXT DEFAULT 'N/A'")
+        except Exception as e:
+            print(f"Migration warning (report_items): {e}")
+
+    try:
+        result = execute_sqlite_wrapper(db, "SELECT currency FROM report_items LIMIT 1")
+    except OperationalError:
+        print("Migrating database: Adding currency column to report_items...")
+        try:
+            result = execute_sqlite_wrapper(db, "ALTER TABLE report_items ADD COLUMN currency TEXT DEFAULT 'USD'")
         except Exception as e:
             print(f"Migration warning (report_items): {e}")
     
@@ -293,6 +313,16 @@ def cancel_order(invoice_number: str) -> bool:
         db.close()
         return False
 
+VALID_CURRENCIES = ('USD', 'ZWL')
+
+
+def _normalize_currency(value) -> str:
+    """Return value uppercased if it's a recognised currency (USD/ZWL), else default to USD."""
+    if isinstance(value, str) and value.strip().upper() in VALID_CURRENCIES:
+        return value.strip().upper()
+    return 'USD'
+
+
 def add_order(order_data: Dict) -> bool:
     """Add a new order/credit note to the database. Returns True if successful,
     False on duplicate filename or invoice_number."""
@@ -314,8 +344,9 @@ def add_order(order_data: Dict) -> bool:
         result = execute_sqlite_wrapper(db, '''
             INSERT INTO orders (filename, date_processed, customer_name, total_value,
                               order_number, invoice_number, invoice_date, area,
-                              type, reference_number, original_value, status, customer_number)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              type, reference_number, original_value, status, customer_number,
+                              currency)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             order_data.get('filename'),
             order_data.get('date_processed', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
@@ -329,7 +360,8 @@ def add_order(order_data: Dict) -> bool:
             order_data.get('reference_number', None),
             order_data.get('original_value', None),
             order_data.get('status', 'PENDING'),
-            order_data.get('customer_number', 'N/A')
+            order_data.get('customer_number', 'N/A'),
+            _normalize_currency(order_data.get('currency'))
         ))
         db.commit()
         db.close()

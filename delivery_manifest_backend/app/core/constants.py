@@ -34,3 +34,9 @@ DELIVERY_EVENT_TYPES = ("STATUS_CHANGE", "POD_UPLOAD")
 # Named shortcuts for direct usage in code (kept in sync with tuples above)
 DELIVERY_EVENT_STATUS_CHANGE = "STATUS_CHANGE"
 DELIVERY_EVENT_POD_UPLOAD    = "POD_UPLOAD"
+
+# ── Currency ─────────────────────────────────────────────────────────────────
+
+# Values stored in orders.currency and report_items.currency
+VALID_CURRENCIES = ("USD", "ZWL")
+DEFAULT_CURRENCY = "USD"

@@ -813,13 +813,14 @@ async function exportDrivers() {
 // ── Invoiced Orders KPI ───────────────────────────────────────────────────
 
 async function loadInvoicedOrders() {
-    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
     try {
         const res = await apiFetch(`${API_BASE}/invoiced-orders?${buildParams()}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const d = await res.json();
-        set('kpi-total-invoiced-value', '£' + fmtMoney(d.total_invoiced_value));
-        set('kpi-total-invoiced-count', fmtNum(d.invoice_count));
+        // totals_by_currency (Stage 4) — one line per currency, never blended.
+        set('kpi-total-invoiced-value', formatTotalsByCurrency(d.totals_by_currency));
+        set('kpi-total-invoiced-count', fmtNum(sumAcrossCurrencies(d.totals_by_currency, 'invoice_count')));
     } catch (e) {
         console.error('[Analytics] Invoiced orders error:', e.message);
         set('kpi-total-invoiced-value', '—');
@@ -830,13 +831,13 @@ async function loadInvoicedOrders() {
 // ── Invoiced by Date Range KPI ────────────────────────────────────────────
 
 async function loadInvoicedByDateRange() {
-    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
     try {
         const res = await apiFetch(`${API_BASE}/invoiced-by-date-range?${buildParams()}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const d = await res.json();
-        set('kpi-inv-by-date-count', fmtNum(d.invoice_count));
-        set('kpi-inv-by-date-value', '£' + fmtMoney(d.total_invoice_value));
+        set('kpi-inv-by-date-count', fmtNum(sumAcrossCurrencies(d.totals_by_currency, 'invoice_count')));
+        set('kpi-inv-by-date-value', formatTotalsByCurrency(d.totals_by_currency));
     } catch (e) {
         console.error('[Analytics] Invoiced by date range error:', e.message);
         set('kpi-inv-by-date-count', '—');
@@ -858,17 +859,22 @@ async function loadValueOverview() {
 }
 
 function renderValueOverviewCards(d) {
-    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-    if (!d) {
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
+    const totals = (d && Array.isArray(d.totals_by_currency)) ? d.totals_by_currency : [];
+    if (!d || totals.length === 0) {
         ['kpi-total-value', 'kpi-value-manifest-count', 'kpi-avg-manifest-value',
          'kpi-highest-manifest-value', 'kpi-lowest-manifest-value'].forEach(id => set(id, '—'));
         return;
     }
-    set('kpi-total-value',            fmtMoney(d.total_dispatched_value));
-    set('kpi-value-manifest-count',   fmtNum(d.manifest_count));
-    set('kpi-avg-manifest-value',     fmtMoney(d.average_manifest_value));
-    set('kpi-highest-manifest-value', fmtMoney(d.highest_manifest_value));
-    set('kpi-lowest-manifest-value',  fmtMoney(d.lowest_manifest_value));
+    // totals_by_currency (Stage 4) — one line per currency, never blended.
+    // Note: manifest_count is per-currency on the backend (a manifest mixing
+    // USD+ZWL is counted under each currency it contains), so this sum can
+    // exceed the true distinct manifest count for mixed-currency periods.
+    set('kpi-total-value',            formatTotalsByCurrency(totals, 'total_value'));
+    set('kpi-value-manifest-count',   fmtNum(sumAcrossCurrencies(totals, 'manifest_count')));
+    set('kpi-avg-manifest-value',     formatTotalsByCurrency(totals, 'average_manifest_value'));
+    set('kpi-highest-manifest-value', formatTotalsByCurrency(totals, 'highest_manifest_value'));
+    set('kpi-lowest-manifest-value',  formatTotalsByCurrency(totals, 'lowest_manifest_value'));
 }
 
 async function loadValueManifests(offset) {
@@ -910,6 +916,9 @@ function renderValueManifestsTable(rows) {
     if (!tbody) return;
     tbody.innerHTML = '';
     rows.forEach(r => {
+        // totals_by_currency (Stage 4) — a manifest mixing USD+ZWL shows one
+        // line per currency, never a single blended figure.
+        const totals = Array.isArray(r.totals_by_currency) ? r.totals_by_currency : [];
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td>${escapeHtml(r.manifest_number)}</td>
@@ -917,9 +926,9 @@ function renderValueManifestsTable(rows) {
             <td>${escapeHtml(r.truck)}</td>
             <td>${escapeHtml(r.driver)}</td>
             <td>${escapeHtml(r.route)}</td>
-            <td class="num-cell">${fmtNum(r.invoice_count)}</td>
-            <td class="num-cell">${fmtMoney(r.manifest_value)}</td>
-            <td class="num-cell">${fmtMoney(r.average_invoice_value)}</td>
+            <td class="num-cell">${fmtNum(sumAcrossCurrencies(totals, 'invoice_count'))}</td>
+            <td class="num-cell">${formatTotalsByCurrency(totals, 'total_value')}</td>
+            <td class="num-cell">${formatTotalsByCurrency(totals, 'average_invoice_value')}</td>
         `;
         tbody.appendChild(tr);
     });
@@ -961,15 +970,20 @@ function renderValueTrucksTable(rows) {
     if (!tbody) return;
     tbody.innerHTML = '';
     rows.forEach(r => {
+        // totals_by_currency (Stage 4) — a truck carrying both USD and ZWL
+        // loads shows one line per currency, never a single blended figure.
+        // manifests_assigned / invoices_carried are true counts from the
+        // backend (not inflated by the currency split).
+        const totals = Array.isArray(r.totals_by_currency) ? r.totals_by_currency : [];
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td>${escapeHtml(r.truck)}</td>
             <td class="num-cell">${fmtNum(r.manifests_assigned)}</td>
             <td class="num-cell">${fmtNum(r.invoices_carried)}</td>
-            <td class="num-cell">${fmtMoney(r.total_value_carried)}</td>
-            <td class="num-cell">${fmtMoney(r.average_manifest_value)}</td>
-            <td class="num-cell">${fmtMoney(r.highest_manifest_value)}</td>
-            <td class="num-cell">${fmtMoney(r.lowest_manifest_value)}</td>
+            <td class="num-cell">${formatTotalsByCurrency(totals, 'total_value')}</td>
+            <td class="num-cell">${formatTotalsByCurrency(totals, 'average_manifest_value')}</td>
+            <td class="num-cell">${formatTotalsByCurrency(totals, 'highest_manifest_value')}</td>
+            <td class="num-cell">${formatTotalsByCurrency(totals, 'lowest_manifest_value')}</td>
         `;
         tbody.appendChild(tr);
     });

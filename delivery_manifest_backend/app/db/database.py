@@ -471,6 +471,10 @@ def _run_migrations(db) -> None:
          "ALTER TABLE delivery_events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'STATUS_CHANGE'"),
         ("delivery_events", "previous_status",
          "ALTER TABLE delivery_events ADD COLUMN previous_status TEXT"),
+        # Currency support v1 — USD and ZWL invoices now coexist; existing rows
+        # default to USD (the prior implicit assumption before this column existed).
+        ("orders",       "currency", "ALTER TABLE orders ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'"),
+        ("report_items", "currency", "ALTER TABLE report_items ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'"),
     ]
     for table, column, sql in migrations:
         try:

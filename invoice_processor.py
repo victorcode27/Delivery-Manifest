@@ -35,6 +35,22 @@ IMPORT_CUTOFF_DATE = datetime.datetime(2026, 6, 18)
 # Checked case-insensitively against the base filename before extraction.
 SKIP_FILENAME_PATTERNS = [r"REPRINT", r"FISCAL", r"TAX.?INVOICE"]
 
+# Currency tokens recognised on the "Invoice Total" line, normalised to the
+# two canonical codes the system tracks (USD / ZWL).  Matched case-insensitively.
+CURRENCY_ALIASES = {
+    "USD":  "USD",
+    "US$":  "USD",
+    "ZWL":  "ZWL",
+    "ZWG":  "ZWL",
+    "RTGS": "ZWL",
+    "Z$":   "ZWL",
+}
+
+
+def normalize_currency(raw_token: str) -> str:
+    """Map a raw currency token from an invoice to its canonical code (USD/ZWL)."""
+    return CURRENCY_ALIASES.get(raw_token.upper(), "USD")
+
 # Number of consecutive pre-open missing-file failures before the share is
 # declared offline and the run is aborted.  5 tolerates the occasional
 # genuinely-absent REPRINT file without triggering a false abort, while
@@ -81,6 +97,7 @@ def extract_invoice_data(pdf_path):
         "date_processed": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "customer_name": "Unknown",
         "total_value": "0.00",
+        "currency": "USD",
         "invoice_number": "N/A",
         "order_number": "N/A",
         "invoice_date": "N/A",
@@ -113,16 +130,10 @@ def extract_invoice_data(pdf_path):
                 if name_match:
                     data["customer_name"] = name_match.group(1).strip()
 
-            # Invoice Total
-            # (?:[A-Z]{2,4}\s+)? skips any currency code (ZWG, USD, ZWL, ZAR, etc.)
-            total_match = re.search(r"Invoice\s*Total[:\s]+(?:[A-Z]{2,4}\s+)?([\d,]+\.?\d*)", text, re.IGNORECASE)
-            if total_match:
-                data["total_value"] = total_match.group(1).strip()
-            else:
-                logger.warning(f"[WARN] Could not extract Invoice Total from {os.path.basename(pdf_path)}")
-
             # Invoice Number - Check for BCRN (Credit Note) or BINV
             # Priority to BCRN to identify Credit Note
+            # (Extracted before Invoice Total so the currency-detection warning
+            # below can include the invoice number in its log message.)
             bcrn_match = re.search(r"Invoice\s*No[:\s]*(BCRN[\d]+)", text, re.IGNORECASE)
             if bcrn_match:
                 data["invoice_number"] = bcrn_match.group(1).strip()
@@ -131,12 +142,37 @@ def extract_invoice_data(pdf_path):
                  invoice_match = re.search(r"Invoice\s*No[:\s]*([\w]+)", text, re.IGNORECASE)
                  if invoice_match:
                      data["invoice_number"] = invoice_match.group(1).strip()
-            
+
             # Reference Number (for Credit Notes)
             if data["type"] == "CREDIT_NOTE":
                 ref_match = re.search(r"Reference\s*No[:\s]*([\w]+)", text, re.IGNORECASE)
                 if ref_match:
                     data["reference_number"] = ref_match.group(1).strip()
+
+            # Invoice Total + currency
+            # Currency token is now captured (not discarded) so total_value and
+            # currency are extracted together from the same line. Recognised
+            # tokens normalise via CURRENCY_ALIASES; a missing/unrecognised
+            # token defaults to USD with a warning (backward-compatible).
+            total_match = re.search(
+                r"Invoice\s*Total[:\s]+(?:(USD|US\$|ZWL|ZWG|RTGS|Z\$)\s+)?([\d,]+\.?\d*)",
+                text,
+                re.IGNORECASE,
+            )
+            if total_match:
+                data["total_value"] = total_match.group(2).strip()
+                currency_token = total_match.group(1)
+                if currency_token:
+                    data["currency"] = normalize_currency(currency_token)
+                else:
+                    data["currency"] = "USD"
+                    logger.warning(
+                        f"[CURRENCY-UNKNOWN] No currency code found on Invoice Total line — "
+                        f"defaulting to USD. invoice_number={data.get('invoice_number', 'N/A')} "
+                        f"file={os.path.basename(pdf_path)}"
+                    )
+            else:
+                logger.warning(f"[WARN] Could not extract Invoice Total from {os.path.basename(pdf_path)}")
 
             # Order Number and Invoice Date from table
             order_header_match = re.search(r"Account\s+Date\s+Order\s+No", text, re.IGNORECASE)
@@ -259,12 +295,27 @@ def process_invoice_logic(invoice_data):
         ref_number = invoice_data.get("reference_number")
         if ref_number:
             linked_invoice = database.get_order_by_invoice_number(ref_number)
+            # Currencies are never converted — a CN cannot be reconciled
+            # against an invoice issued in a different currency. Leave it
+            # ORPHAN for manual review rather than blending the amounts.
+            if linked_invoice:
+                cn_currency = normalize_currency(invoice_data.get('currency') or 'USD')
+                inv_currency = normalize_currency(linked_invoice.get('currency') or 'USD')
+                if cn_currency != inv_currency:
+                    logger.error(
+                        f"     -> CURRENCY MISMATCH: CN {invoice_data['invoice_number']} is "
+                        f"{cn_currency} but Invoice {ref_number} is {inv_currency}. "
+                        f"Skipping automatic reconciliation; marking CN as ORPHAN."
+                    )
+                    invoice_data['status'] = 'ORPHAN'
+                    linked_invoice = None  # fall through to save without applying credit logic
+
             if linked_invoice:
                 try:
                     # Parse amounts
                     credit_val = float(invoice_data['total_value'].replace(',', ''))
                     invoice_val = float(linked_invoice['total_value'].replace(',', ''))
-                    
+
                     # Check Full or Partial
                     if credit_val >= invoice_val - 0.01: # Small epsilon for float comparison
                         # Full Credit -> Cancel
@@ -280,7 +331,7 @@ def process_invoice_logic(invoice_data):
                         logger.info(f"     -> PARTIAL CREDIT: Adjusted Invoice {ref_number} to {new_val:.2f}")
                 except ValueError:
                     logger.error("     -> Error parsing values for logic application")
-            else:
+            elif ref_number and invoice_data.get('status') != 'ORPHAN':
                 logger.warning(f"     -> Linked Invoice {ref_number} NOT FOUND in DB. Marking CN as ORPHAN.")
                 invoice_data['status'] = 'ORPHAN'
         else:

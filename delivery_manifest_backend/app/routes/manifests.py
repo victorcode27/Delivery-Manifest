@@ -115,6 +115,7 @@ def get_invoices(
                 "date_processed":  o.get("date_processed"),
                 "customer_name":   o.get("customer_name"),
                 "total_value":     o.get("total_value"),
+                "currency":        o.get("currency", "USD"),
                 "order_number":    o.get("order_number"),
                 "invoice_number":  o.get("invoice_number", "N/A"),
                 "customer_number": o.get("customer_number", "N/A"),
@@ -217,6 +218,7 @@ def add_manual_invoice(
             order_number=req.order_number,
             customer_number=req.customer_number,
             area=req.area,
+            currency=req.currency,
         )
         if filename is None:
             raise HTTPException(status_code=400, detail="Failed to add invoice (duplicate?)")
@@ -252,6 +254,7 @@ def add_manual_invoice_and_stage(
             order_number=req.order_number,
             customer_number=req.customer_number,
             area=req.area,
+            currency=req.currency,
         )
         if filename is None:
             raise HTTPException(

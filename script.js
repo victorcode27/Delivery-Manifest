@@ -563,7 +563,8 @@ async function renderTable() {
     await loadCurrentManifestFromAPI();
 
     tableBody.innerHTML = '';
-    const { sku: tSku, value: tValue, weight: tWeight } = calcTotals(orders);
+    const { sku: tSku, weight: tWeight } = calcTotals(orders);
+    const valueTotalsByCurrency = calcValueTotalsByCurrency(orders);
 
     orders.forEach(order => {
         const row = document.createElement('tr');
@@ -572,7 +573,7 @@ async function renderTable() {
             <td>${order.customer}</td>
             <td>${order.area}</td>
             <td>${order.sku}</td>
-            <td>$${order.value.toFixed(2)}</td>
+            <td>${formatCurrencyValue(order.value, order.currency)}</td>
             <td>${order.weight}</td>
             <td>
                 <button onclick="removeOrder(${order.id})" class="btn-icon text-red-500">
@@ -584,7 +585,8 @@ async function renderTable() {
     });
 
     totalSkuEl.textContent = tSku;
-    totalValueEl.textContent = '$' + tValue.toFixed(2);
+    // Mixed USD/ZWL selections show one line per currency — never a blended sum.
+    totalValueEl.innerHTML = formatTotalsByCurrency(valueTotalsByCurrency, 'value');
     totalWeightEl.textContent = tWeight.toFixed(1);
     orderCountEl.textContent = `${orders.length} Invoices`;
 
@@ -686,6 +688,7 @@ async function loadCurrentManifestFromAPI() {
             area: inv.area || 'UNKNOWN',
             sku: 0, // Default
             value: parseFloat(String(inv.total_value).replace(/[^0-9.-]/g, '')) || 0,
+            currency: inv.currency || DEFAULT_CURRENCY,
             weight: 0, // Default
             timestamp: inv.date_processed || new Date().toISOString()
         }));
@@ -946,7 +949,8 @@ function showPreviewModal() {
     const previewOrdersList = document.getElementById('preview-orders-list');
     previewOrdersList.innerHTML = '';
 
-    const { sku: tSku, value: tValue, weight: tWeight } = calcTotals(orders);
+    const { sku: tSku, weight: tWeight } = calcTotals(orders);
+    const previewValueTotalsByCurrency = calcValueTotalsByCurrency(orders);
 
     orders.forEach(order => {
         const row = document.createElement('tr');
@@ -955,15 +959,15 @@ function showPreviewModal() {
             <td>${order.customer}</td>
             <td>${order.area}</td>
             <td>${order.sku}</td>
-            <td>$${order.value.toFixed(2)}</td>
+            <td>${formatCurrencyValue(order.value, order.currency)}</td>
             <td>${order.weight}</td>
         `;
         previewOrdersList.appendChild(row);
     });
 
-    // Update totals
+    // Update totals — mixed USD/ZWL selections show one line per currency.
     document.getElementById('preview-total-sku').textContent = tSku;
-    document.getElementById('preview-total-value').textContent = '$' + tValue.toFixed(2);
+    document.getElementById('preview-total-value').innerHTML = formatTotalsByCurrency(previewValueTotalsByCurrency, 'value');
     document.getElementById('preview-total-weight').textContent = tWeight.toFixed(1);
 
     // Show modal
@@ -1102,6 +1106,8 @@ async function generateExcel(manifestNum) {
     });
 
     // Data Rows
+    // VALUE is written as "CUR 1,234.56" text (not a numeric $-formatted cell) —
+    // a mixed USD/ZWL manifest must never look like a single-currency figure.
     orders.forEach(order => {
         const row = sheet.addRow([
             order.invoice,
@@ -1109,26 +1115,32 @@ async function generateExcel(manifestNum) {
             order.customerNumber || 'N/A',
             order.area,
             order.sku,
-            order.value,
+            formatCurrencyValue(order.value, order.currency),
             order.weight,
             order.invoiceDate ? formatDate(order.invoiceDate) : '',
             '', '', ''
         ]);
-        row.getCell(6).numFmt = '"$"#,##0.00';
         row.eachCell((cell) => {
             cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
         });
     });
 
-    // Totals Row
+    // Totals Row — one line per currency in the VALUE cell, never blended.
+    // Column indices match the header row (E=SKU, F=Value, G=Weight); a
+    // pre-existing off-by-one here previously put the SKU total under Area
+    // and the value/weight totals one column left of their headers, which
+    // would have put this currency breakdown under the wrong column too.
     const lastRow = sheet.lastRow.number + 1;
     const totalRow = sheet.getRow(lastRow);
     const excelTotals = calcTotals(orders);
+    const excelValueTotalsByCurrency = calcValueTotalsByCurrency(orders);
     totalRow.getCell(1).value = 'Grand Total';
-    totalRow.getCell(4).value = excelTotals.sku;
-    totalRow.getCell(5).value = excelTotals.value;
-    totalRow.getCell(5).numFmt = '"$"#,##0.00';
-    totalRow.getCell(6).value = excelTotals.weight;
+    totalRow.getCell(5).value = excelTotals.sku;
+    totalRow.getCell(6).value = excelValueTotalsByCurrency
+        .map(t => formatCurrencyValue(t.value, t.currency))
+        .join('\n');
+    totalRow.getCell(6).alignment = { wrapText: true };
+    totalRow.getCell(7).value = excelTotals.weight;
     totalRow.eachCell((cell) => {
         cell.font = { bold: true };
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
@@ -1232,7 +1244,7 @@ async function loadInvoicesIntoModal(area = null) {
             <td>${inv.order_number || 'N/A'}</td>
             <td>${inv.invoice_date || 'N/A'}</td>
             <td>${inv.customer_name}</td>
-            <td>${inv.total_value}</td>
+            <td>${formatCurrencyValue(inv.total_value, inv.currency)}</td>
             <td>${inv.date_processed}</td>
         `;
         tableBody.appendChild(row);
@@ -1529,7 +1541,7 @@ function renderFilteredInvoices() {
             <td>${inv.order_number || 'N/A'}</td>
             <td>${inv.invoice_date || 'N/A'}</td>
             <td>${inv.customer_name}</td>
-            <td>${inv.total_value}</td>
+            <td>${formatCurrencyValue(inv.total_value, inv.currency)}</td>
             <td>${inv.date_processed}</td>
         `;
         tableBody.appendChild(row);

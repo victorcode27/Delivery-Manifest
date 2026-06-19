@@ -50,6 +50,7 @@ class Order(Base):
     date_processed   = Column(Text, nullable=False)
     customer_name    = Column(Text, nullable=False)
     total_value      = Column(Text, default="0.00")
+    currency         = Column(Text, nullable=False, default="USD")
     order_number     = Column(Text, default="N/A")
     invoice_number   = Column(Text, default="N/A")
     invoice_date     = Column(Text, default="N/A")
@@ -113,6 +114,7 @@ class ReportItem(Base):
     area            = Column(Text)
     sku             = Column(Integer, default=0)
     value           = Column(Float, default=0)
+    currency        = Column(Text, nullable=False, default="USD")
     weight          = Column(Float, default=0)
 
     report = relationship("Report", back_populates="items")
