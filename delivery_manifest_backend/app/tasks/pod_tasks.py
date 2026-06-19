@@ -51,7 +51,7 @@ class FileWatcher:
         self.last_scan_time: Optional[str] = None
         # Pre-filter constants — overwritten from invoice_processor at init time.
         # Defaults here ensure the watcher is always safe even if the import fails.
-        self._cutoff_ts:     float      = datetime.datetime(2026, 6, 18).timestamp()
+        self._cutoff_ts:     float      = datetime.datetime(2026, 6, 19).timestamp()
         self._skip_patterns: List[str]  = [r"REPRINT", r"FISCAL", r"TAX.?INVOICE"]
 
     # ── File stability ────────────────────────────────────────────────────────

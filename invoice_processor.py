@@ -29,7 +29,7 @@ INPUT_FOLDER = os.getenv("INVOICE_INPUT_FOLDER", r"\\BRD-DESKTOP-ELV\storage")
 # Import cutoff: skip files whose file-system mtime is older than this date.
 # Defined here (not inside main()) so file_watcher.py can import it and apply
 # the same threshold, keeping both import paths in sync.
-IMPORT_CUTOFF_DATE = datetime.datetime(2026, 6, 18)
+IMPORT_CUTOFF_DATE = datetime.datetime(2026, 6, 19)
 
 # Filename patterns for file types that must never be imported.
 # Checked case-insensitively against the base filename before extraction.
