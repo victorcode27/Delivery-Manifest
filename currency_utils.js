@@ -18,7 +18,11 @@ function formatCurrencyValue(value, currency) {
     const cur = (currency && String(currency).trim())
         ? String(currency).trim().toUpperCase()
         : DEFAULT_CURRENCY;
-    const num = Number(value);
+    // total_value from the API can be a string with thousands-separator
+    // commas (the parser preserves the PDF's printed format verbatim, e.g.
+    // "1,897.99") — Number() on a comma-containing string is NaN, which
+    // silently rendered as "0.00". Strip non-numeric formatting first.
+    const num = Number(String(value).replace(/[^0-9.-]/g, ''));
     const formatted = (isNaN(num) ? 0 : num).toLocaleString('en-US', {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
@@ -69,7 +73,8 @@ function calcValueTotalsByCurrency(items, valueField = 'value', currencyField = 
         const cur = (item[currencyField] && String(item[currencyField]).trim())
             ? String(item[currencyField]).trim().toUpperCase()
             : DEFAULT_CURRENCY;
-        byCurrency[cur] = (byCurrency[cur] || 0) + (Number(item[valueField]) || 0);
+        const itemNum = Number(String(item[valueField]).replace(/[^0-9.-]/g, ''));
+        byCurrency[cur] = (byCurrency[cur] || 0) + (isNaN(itemNum) ? 0 : itemNum);
     });
     return Object.keys(byCurrency).sort().map(currency => ({ currency, value: byCurrency[currency] }));
 }
