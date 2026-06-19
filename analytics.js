@@ -838,10 +838,16 @@ async function loadInvoicedByDateRange() {
         const d = await res.json();
         set('kpi-inv-by-date-count', fmtNum(sumAcrossCurrencies(d.totals_by_currency, 'invoice_count')));
         set('kpi-inv-by-date-value', formatTotalsByCurrency(d.totals_by_currency));
+        set('kpi-inv-by-date-average', formatTotalsByCurrency(d.totals_by_currency, 'average_invoice_value'));
+        set('kpi-inv-by-date-highest', formatTotalsByCurrency(d.totals_by_currency, 'highest_invoice_value'));
+        set('kpi-inv-by-date-lowest', formatTotalsByCurrency(d.totals_by_currency, 'lowest_invoice_value'));
     } catch (e) {
         console.error('[Analytics] Invoiced by date range error:', e.message);
         set('kpi-inv-by-date-count', '—');
         set('kpi-inv-by-date-value', '—');
+        set('kpi-inv-by-date-average', '—');
+        set('kpi-inv-by-date-highest', '—');
+        set('kpi-inv-by-date-lowest', '—');
     }
 }
 

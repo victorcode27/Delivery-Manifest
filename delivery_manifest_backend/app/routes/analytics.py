@@ -1377,7 +1377,9 @@ def analytics_invoiced_by_date_range(
     --------
       date_from            — echo of the requested date_from (or null)
       date_to              — echo of the requested date_to (or null)
-      totals_by_currency    — list of {currency, invoice_count, total_value}
+      totals_by_currency    — list of {currency, invoice_count, total_value,
+                               average_invoice_value, highest_invoice_value,
+                               lowest_invoice_value}
       invoice_count         — legacy flat field, only set when a single currency is present
       total_invoice_value   — legacy flat field, only set when a single currency is present
     """
@@ -1417,7 +1419,10 @@ def analytics_invoiced_by_date_range(
             SELECT
                 currency,
                 COUNT(*)                          AS invoice_count,
-                COALESCE(SUM(invoice_value), 0)   AS total_value
+                COALESCE(SUM(invoice_value), 0)   AS total_value,
+                COALESCE(AVG(invoice_value), 0)   AS average_invoice_value,
+                COALESCE(MAX(invoice_value), 0)   AS highest_invoice_value,
+                COALESCE(MIN(invoice_value), 0)   AS lowest_invoice_value
             FROM unique_invoices
             GROUP BY currency
             ORDER BY currency
@@ -1428,9 +1433,12 @@ def analytics_invoiced_by_date_range(
 
     totals_by_currency = [
         {
-            "currency":      r.currency,
-            "invoice_count": int(r.invoice_count or 0),
-            "total_value":   round(float(r.total_value or 0), 2),
+            "currency":              r.currency,
+            "invoice_count":         int(r.invoice_count or 0),
+            "total_value":           round(float(r.total_value or 0), 2),
+            "average_invoice_value": round(float(r.average_invoice_value or 0), 2),
+            "highest_invoice_value": round(float(r.highest_invoice_value or 0), 2),
+            "lowest_invoice_value":  round(float(r.lowest_invoice_value or 0), 2),
         }
         for r in rows
     ]
