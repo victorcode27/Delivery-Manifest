@@ -56,6 +56,11 @@ class DeliveryManifestSummary(BaseModel):
     reg_number:      Optional[str] = None
     total_items:     int
     delivery_summary: DeliveryStatusSummary
+    # 3PL / Swift consignment (Phase 1 — one consignment per manifest)
+    delivery_type:        str            = "INTERNAL"
+    third_party_provider: Optional[str]   = None
+    consignment_number:   Optional[str]   = None
+    consignment_date:     Optional[str]   = None
 
 
 class DeliveryManifestListResponse(BaseModel):
@@ -89,6 +94,11 @@ class DeliveryManifestDetailResponse(BaseModel):
     date_dispatched: Optional[str] = None
     manifest_status: str           # derived, not stored
     items:           List[DeliveryManifestItem]
+    # 3PL / Swift consignment (Phase 1 — one consignment per manifest)
+    delivery_type:        str            = "INTERNAL"
+    third_party_provider: Optional[str]   = None
+    consignment_number:   Optional[str]   = None
+    consignment_date:     Optional[str]   = None
 
 
 # ── Update endpoint models ─────────────────────────────────────────────────────

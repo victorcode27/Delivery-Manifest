@@ -385,9 +385,10 @@ function filterManifests(manifests) {
     const q = dsState.search.toLowerCase().trim();
     if (q) {
         result = result.filter(m =>
-            (m.manifest_number || '').toLowerCase().includes(q) ||
-            (m.driver          || '').toLowerCase().includes(q) ||
-            (m.reg_number      || '').toLowerCase().includes(q)
+            (m.manifest_number      || '').toLowerCase().includes(q) ||
+            (m.driver               || '').toLowerCase().includes(q) ||
+            (m.reg_number           || '').toLowerCase().includes(q) ||
+            (m.consignment_number   || '').toLowerCase().includes(q)
         );
     }
 
@@ -418,8 +419,15 @@ function renderManifests(manifests) {
         row.style.cursor = 'pointer';
         row.title = 'Click to view invoice details';
 
+        const isSwift = m.delivery_type === 'SWIFT_3PL';
+        const swiftBadgeHtml = isSwift
+            ? `<br><span style="font-size:0.7rem;font-weight:600;color:#92400e;">
+                   Swift / 3PL: ${dsEsc(m.third_party_provider || 'Swift')} - ${dsEsc(m.consignment_number || '—')}
+               </span>`
+            : '';
+
         row.innerHTML = `
-            <td><strong>${dsEsc(m.manifest_number)}</strong></td>
+            <td><strong>${dsEsc(m.manifest_number)}</strong>${swiftBadgeHtml}</td>
             <td>${dsFormatDate(m.date_dispatched)}</td>
             <td>${dsEsc(m.driver || '—')}</td>
             <td>${dsEsc(m.reg_number || '—')}</td>
@@ -588,12 +596,21 @@ function renderDetailModal(manifest) {
            </div>`
         : '';
 
+    const isSwiftManifest = manifest.delivery_type === 'SWIFT_3PL';
+    const swiftInfoHtml = isSwiftManifest
+        ? `<span><strong>Delivery Type:</strong> Swift / 3PL</span>
+           <span><strong>Provider:</strong> ${dsEsc(manifest.third_party_provider || 'Swift')}</span>
+           <span><strong>Consignment No.:</strong> ${dsEsc(manifest.consignment_number || '—')}</span>
+           <span><strong>Consignment Date:</strong> ${manifest.consignment_date ? dsFormatDate(manifest.consignment_date) : '—'}</span>`
+        : '';
+
     body.innerHTML = `
         <div class="ds-modal-info">
             <span><strong>Driver:</strong> ${dsEsc(manifest.driver || '—')}</span>
             <span><strong>Date:</strong> ${dsFormatDate(manifest.date_dispatched)}</span>
             <span><strong>Overall Status:</strong> ${manifestStatusBadge(manifest.manifest_status || 'PENDING')}</span>
             <span><strong>Invoices:</strong> ${items.length}</span>
+            ${swiftInfoHtml}
         </div>
         ${bulkActionHtml}
         <div class="table-container ds-detail-table">

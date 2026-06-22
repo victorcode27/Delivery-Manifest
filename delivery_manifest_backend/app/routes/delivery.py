@@ -143,6 +143,10 @@ def list_manifests(
             r.driver,
             r.assistant,
             r.reg_number,
+            r.delivery_type,
+            r.third_party_provider,
+            r.consignment_number,
+            r.consignment_date,
             COUNT(ri.id)                                                            AS total_items,
             SUM(CASE WHEN COALESCE(du.status, 'PENDING') = 'DELIVERED'  THEN 1 ELSE 0 END) AS delivered,
             SUM(CASE WHEN COALESCE(du.status, 'PENDING') = 'PENDING'    THEN 1 ELSE 0 END) AS pending,
@@ -154,7 +158,8 @@ def list_manifests(
         LEFT JOIN report_items    ri ON ri.report_id     = r.id
         LEFT JOIN delivery_updates du ON du.report_item_id = ri.id
         {where_sql}
-        GROUP BY r.manifest_number, r.date_dispatched, r.driver, r.assistant, r.reg_number
+        GROUP BY r.manifest_number, r.date_dispatched, r.driver, r.assistant, r.reg_number,
+                 r.delivery_type, r.third_party_provider, r.consignment_number, r.consignment_date
         ORDER BY r.date_dispatched DESC NULLS LAST
     """)
 
@@ -186,13 +191,17 @@ def list_manifests(
             in_transit = row.in_transit or 0,
         )
         manifests.append(DeliveryManifestSummary(
-            manifest_number  = row.manifest_number,
-            date_dispatched  = row.date_dispatched,
-            driver           = row.driver,
-            assistant        = row.assistant,
-            reg_number       = row.reg_number,
-            total_items      = row.total_items or 0,
-            delivery_summary = summary,
+            manifest_number      = row.manifest_number,
+            date_dispatched      = row.date_dispatched,
+            driver               = row.driver,
+            assistant            = row.assistant,
+            reg_number           = row.reg_number,
+            total_items          = row.total_items or 0,
+            delivery_summary     = summary,
+            delivery_type        = row.delivery_type or "INTERNAL",
+            third_party_provider = row.third_party_provider,
+            consignment_number   = row.consignment_number,
+            consignment_date     = row.consignment_date,
         ))
 
     logger.info(
@@ -233,7 +242,8 @@ def get_manifest_detail(
     # Manifest header
     header = db.execute(
         text("""
-            SELECT manifest_number, date_dispatched, driver, assistant
+            SELECT manifest_number, date_dispatched, driver, assistant,
+                   delivery_type, third_party_provider, consignment_number, consignment_date
             FROM   reports
             WHERE  manifest_number = :mn
             LIMIT  1
@@ -297,12 +307,16 @@ def get_manifest_detail(
         ))
 
     return DeliveryManifestDetailResponse(
-        manifest_number = header.manifest_number,
-        driver          = header.driver,
-        assistant       = header.assistant,
-        date_dispatched = header.date_dispatched,
-        manifest_status = delivery_service.derive_manifest_status(statuses),
-        items           = items,
+        manifest_number      = header.manifest_number,
+        driver               = header.driver,
+        assistant            = header.assistant,
+        date_dispatched      = header.date_dispatched,
+        manifest_status      = delivery_service.derive_manifest_status(statuses),
+        items                = items,
+        delivery_type        = header.delivery_type or "INTERNAL",
+        third_party_provider = header.third_party_provider,
+        consignment_number   = header.consignment_number,
+        consignment_date     = header.consignment_date,
     )
 
 
