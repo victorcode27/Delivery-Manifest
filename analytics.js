@@ -810,24 +810,6 @@ async function exportDrivers() {
     }
 }
 
-// ── Invoiced Orders KPI ───────────────────────────────────────────────────
-
-async function loadInvoicedOrders() {
-    const set = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
-    try {
-        const res = await apiFetch(`${API_BASE}/invoiced-orders?${buildParams()}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const d = await res.json();
-        // totals_by_currency (Stage 4) — one line per currency, never blended.
-        set('kpi-total-invoiced-value', formatTotalsByCurrency(d.totals_by_currency));
-        set('kpi-total-invoiced-count', fmtNum(sumAcrossCurrencies(d.totals_by_currency, 'invoice_count')));
-    } catch (e) {
-        console.error('[Analytics] Invoiced orders error:', e.message);
-        set('kpi-total-invoiced-value', '—');
-        set('kpi-total-invoiced-count', '—');
-    }
-}
-
 // ── Invoiced by Date Range KPI ────────────────────────────────────────────
 
 async function loadInvoicedByDateRange() {
@@ -1003,7 +985,6 @@ function renderValueTrucksTable(rows) {
  */
 function loadAll() {
     loadOverview();
-    loadInvoicedOrders();
     loadInvoicedByDateRange();
     loadValueOverview();
     loadTrends();
