@@ -788,6 +788,23 @@ function renderManifestView(manifest) {
     const list = document.getElementById('reports-list');
     const summaryEl = document.getElementById('report-summary');
 
+    // 3PL / Swift consignment details — only for SWIFT_3PL manifests.
+    // Missing/null delivery_type is treated as INTERNAL (defensive default).
+    const isSwift = manifest.delivery_type === 'SWIFT_3PL';
+    const swiftSectionHtml = isSwift ? `
+        <div style="margin-top:0.75rem; padding-top:0.75rem; border-top:1px solid #e2e8f0;">
+            <div style="font-size: 1rem; font-weight: bold; color: #1e293b; margin-bottom:0.5rem;">
+                3PL / Swift Consignment Details
+            </div>
+            <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; font-size: 0.9rem; color: #64748b;">
+                <div><strong>Provider:</strong> ${manifest.third_party_provider || 'Swift'}</div>
+                <div><strong>Consignment No.:</strong> ${manifest.consignment_number || '—'}</div>
+                <div><strong>Consignment Date:</strong> ${manifest.consignment_date ? formatDate(manifest.consignment_date) : '—'}</div>
+                <div><strong>Notes:</strong> ${manifest.consignment_notes || '—'}</div>
+            </div>
+        </div>
+    ` : '';
+
     // Update summary with Manifest Details
     summaryEl.classList.remove('hidden');
     summaryEl.innerHTML = `
@@ -801,6 +818,7 @@ function renderManifestView(manifest) {
                 <div><strong>Date:</strong> ${formatDate(manifest.date)}</div>
                 <div><strong>Invoices:</strong> ${manifest.invoices.length}</div>
             </div>
+            ${swiftSectionHtml}
             <div style="font-size: 0.8rem; margin-top: 0.5rem; color: #94a3b8;">
                 <button onclick="renderReports()" style="background:none; border:none; text-decoration:underline; cursor:pointer; color: #3b82f6;">
                     &larr; Back to all reports
