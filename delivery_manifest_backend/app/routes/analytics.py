@@ -1307,7 +1307,7 @@ def analytics_invoiced_orders(
             SELECT
                 COALESCE(o.currency, 'USD')                                AS currency,
                 COUNT(*)                                                   AS invoice_count,
-                COALESCE(SUM(CAST(NULLIF(o.total_value, '') AS REAL)), 0)  AS total_value
+                COALESCE(SUM(CAST(NULLIF(REPLACE(o.total_value, ',', ''), '') AS NUMERIC)), 0)  AS total_value
             FROM orders o
             {where}
             GROUP BY COALESCE(o.currency, 'USD')
@@ -1410,7 +1410,7 @@ def analytics_invoiced_by_date_range(
             WITH unique_invoices AS (
                 SELECT
                     o.invoice_number,
-                    MAX(CAST(NULLIF(o.total_value, '') AS REAL)) AS invoice_value,
+                    MAX(CAST(NULLIF(REPLACE(o.total_value, ',', ''), '') AS NUMERIC)) AS invoice_value,
                     MAX(COALESCE(o.currency, 'USD'))              AS currency
                 FROM orders o
                 {where}
