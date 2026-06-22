@@ -989,6 +989,21 @@ def save_report(report_data: Dict) -> dict:
         if assistant_uid is None:
             assistant_uid = _resolve_user_id(db, assistant_name)
 
+        # ── 3PL / Swift consignment (Phase 1) ─────────────────────────────
+        # Validation already happened in the route; INTERNAL never carries
+        # a consignment number here regardless of what was sent.
+        delivery_type = (report_data.get("deliveryType") or "INTERNAL").upper()
+        if delivery_type == "SWIFT_3PL":
+            third_party_provider = report_data.get("thirdPartyProvider") or "Swift"
+            consignment_number   = report_data.get("consignmentNumber")
+            consignment_date     = report_data.get("consignmentDate") or report_data.get("date")
+            consignment_notes    = report_data.get("consignmentNotes")
+        else:
+            third_party_provider = None
+            consignment_number   = None
+            consignment_date     = None
+            consignment_notes    = None
+
         result = execute_query(
             db,
             """
@@ -996,8 +1011,10 @@ def save_report(report_data: Dict) -> dict:
                 (manifest_number, date, date_dispatched, driver, assistant, checker,
                  reg_number, pallets_brown, pallets_blue, crates, mileage,
                  total_value, total_sku, total_weight, created_at,
-                 driver_user_id, assistant_user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 driver_user_id, assistant_user_id,
+                 delivery_type, third_party_provider, consignment_number,
+                 consignment_date, consignment_notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 manifest_number,
@@ -1017,6 +1034,11 @@ def save_report(report_data: Dict) -> dict:
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 driver_uid,       # None when no matching active user found
                 assistant_uid,    # None when no matching active user found
+                delivery_type,
+                third_party_provider,
+                consignment_number,
+                consignment_date,
+                consignment_notes,
             ),
         )
         row = result.fetchone()
@@ -1077,6 +1099,12 @@ def save_report(report_data: Dict) -> dict:
 
         # Audit log (outside the main transaction)
         log_manifest_event(manifest_number, "CREATED", "System")
+        if delivery_type == "SWIFT_3PL" and consignment_number:
+            log_manifest_event(
+                manifest_number,
+                f"SWIFT_CONSIGNMENT_ASSIGNED:{consignment_number}",
+                "System",
+            )
         return {"id": report_id, "manifest_number": manifest_number}
 
     except (ValueError, RuntimeError):

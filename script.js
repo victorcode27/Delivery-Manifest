@@ -155,6 +155,11 @@ const formInputs = {
     palletsBlue: document.getElementById('pallets-blue'),
     crates: document.getElementById('crates'),
     mileage: document.getElementById('mileage'),
+    deliveryType: document.getElementById('delivery-type'),
+    thirdPartyProvider: document.getElementById('third-party-provider'),
+    consignmentNumber: document.getElementById('consignment-number'),
+    consignmentDate: document.getElementById('consignment-date'),
+    consignmentNotes: document.getElementById('consignment-notes'),
 };
 
 const orderInputs = {
@@ -409,6 +414,11 @@ function initSecondaryListeners() {
     // Special listener for truck select
     formInputs.regNumber.addEventListener('change', handleTruckChange);
 
+    // Show/hide Swift / 3PL consignment fields based on Delivery Type
+    formInputs.deliveryType.addEventListener('change', () => { handleDeliveryTypeChange(); updateConsignmentColumn(); });
+    formInputs.consignmentNumber.addEventListener('input', updateConsignmentColumn);
+    handleDeliveryTypeChange();
+
     // Landing & Auth Listeners
     // If already authenticated, bypass login modal and restore straight into the app.
     // If not authenticated, open the login modal as before.
@@ -459,6 +469,31 @@ function initSecondaryListeners() {
 function setDefaultDate() {
     // Always set to current date (read-only field)
     formInputs.date.valueAsDate = new Date();
+}
+
+function getConsignmentDisplay() {
+    const isSwift = formInputs.deliveryType.value === 'SWIFT_3PL';
+    return isSwift && formInputs.consignmentNumber.value.trim()
+        ? formInputs.consignmentNumber.value.trim()
+        : '—';
+}
+
+function updateConsignmentColumn() {
+    const display = getConsignmentDisplay();
+    document.querySelectorAll('#manifest-table tbody .consignment-cell').forEach(cell => {
+        cell.textContent = display;
+    });
+}
+
+function handleDeliveryTypeChange() {
+    const isSwift = formInputs.deliveryType.value === 'SWIFT_3PL';
+    const swiftFields = document.getElementById('swift-consignment-fields');
+    swiftFields.classList.toggle('hidden', !isSwift);
+
+    if (isSwift) {
+        if (!formInputs.thirdPartyProvider.value) formInputs.thirdPartyProvider.value = 'Swift';
+        if (!formInputs.consignmentDate.value) formInputs.consignmentDate.value = formInputs.date.value;
+    }
 }
 
 // Logic
@@ -566,6 +601,8 @@ async function renderTable() {
     const { sku: tSku, weight: tWeight } = calcTotals(orders);
     const valueTotalsByCurrency = calcValueTotalsByCurrency(orders);
 
+    const consignmentDisplay = getConsignmentDisplay();
+
     orders.forEach(order => {
         const row = document.createElement('tr');
         row.innerHTML = `
@@ -575,6 +612,7 @@ async function renderTable() {
             <td>${order.sku}</td>
             <td>${formatCurrencyValue(order.value, order.currency)}</td>
             <td>${order.weight}</td>
+            <td class="consignment-cell">${consignmentDisplay}</td>
             <td>
                 <button onclick="removeOrder(${order.id})" class="btn-icon text-red-500">
                     <i data-lucide="trash-2"></i>
@@ -612,6 +650,11 @@ function resetSystem() {
         // Reset manifest number placeholder for the new session
         formInputs.manifestNumber.value = MANIFEST_PLACEHOLDER;
 
+        // Reset 3PL / Swift consignment fields to default INTERNAL state
+        formInputs.deliveryType.value = 'INTERNAL';
+        formInputs.thirdPartyProvider.value = 'Swift';
+        handleDeliveryTypeChange();
+
         saveState();
         renderTable();
     }
@@ -646,6 +689,8 @@ async function loadState() {
             });
         }
     }
+
+    handleDeliveryTypeChange();
 
     // Manifest items are loaded separately via renderTable().  Callers that
     // need fresh API data must call renderTable() after loadState().
@@ -945,6 +990,18 @@ function showPreviewModal() {
     document.getElementById('preview-crates').textContent = formInputs.crates.value || '0';
     document.getElementById('preview-invoice-count').textContent = orders.length;
 
+    // 3PL / Swift consignment details — only shown for SWIFT_3PL manifests
+    const swiftSection = document.getElementById('preview-swift-section');
+    if (formInputs.deliveryType.value === 'SWIFT_3PL') {
+        document.getElementById('preview-third-party-provider').textContent = formInputs.thirdPartyProvider.value || 'Swift';
+        document.getElementById('preview-consignment-number').textContent = formInputs.consignmentNumber.value || '—';
+        document.getElementById('preview-consignment-date').textContent = formInputs.consignmentDate.value ? formatDate(formInputs.consignmentDate.value) : '—';
+        document.getElementById('preview-consignment-notes').textContent = formInputs.consignmentNotes.value.trim() || '—';
+        swiftSection.classList.remove('hidden');
+    } else {
+        swiftSection.classList.add('hidden');
+    }
+
     // Populate orders table
     const previewOrdersList = document.getElementById('preview-orders-list');
     previewOrdersList.innerHTML = '';
@@ -998,6 +1055,14 @@ async function confirmAndPrint() {
         setTimeout(() => regInput.style.border = "", 3000);
         return;
     }
+    if (formInputs.deliveryType.value === 'SWIFT_3PL' && !formInputs.consignmentNumber.value.trim()) {
+        alert('Swift consignment number is required for 3PL deliveries.');
+        const consignmentInput = formInputs.consignmentNumber;
+        consignmentInput.style.border = "2px solid red";
+        consignmentInput.focus();
+        setTimeout(() => consignmentInput.style.border = "", 3000);
+        return;
+    }
 
     // ── Double-submit guard ───────────────────────────────────────────────
     const confirmBtn = document.getElementById('confirm-print-btn');
@@ -1027,6 +1092,11 @@ async function confirmAndPrint() {
         palletsBlue: parseInt(formInputs.palletsBlue.value) || 0,
         crates: parseInt(formInputs.crates.value) || 0,
         mileage: parseInt(formInputs.mileage.value) || 0,
+        deliveryType: formInputs.deliveryType.value,
+        thirdPartyProvider: formInputs.thirdPartyProvider.value || null,
+        consignmentNumber: formInputs.consignmentNumber.value.trim() || null,
+        consignmentDate: formInputs.consignmentDate.value || null,
+        consignmentNotes: formInputs.consignmentNotes.value || null,
         // totalSku / totalValue / totalWeight intentionally omitted:
         // the backend computes these from report_items after save.
         invoices: orders.map(o => ({
@@ -1064,6 +1134,12 @@ async function confirmAndPrint() {
 
     // ── Step 6: Reset for next manifest ───────────────────────────────────
     formInputs.manifestNumber.value = MANIFEST_PLACEHOLDER;
+    formInputs.deliveryType.value = 'INTERNAL';
+    formInputs.thirdPartyProvider.value = 'Swift';
+    formInputs.consignmentNumber.value = '';
+    formInputs.consignmentDate.value = '';
+    formInputs.consignmentNotes.value = '';
+    handleDeliveryTypeChange();
     orders = [];
     setDefaultDate();
     saveState();

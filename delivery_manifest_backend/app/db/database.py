@@ -475,6 +475,13 @@ def _run_migrations(db) -> None:
         # default to USD (the prior implicit assumption before this column existed).
         ("orders",       "currency", "ALTER TABLE orders ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'"),
         ("report_items", "currency", "ALTER TABLE report_items ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'"),
+        # 3PL / Swift consignment v1 — existing manifests backfilled as INTERNAL.
+        ("reports", "delivery_type",
+         "ALTER TABLE reports ADD COLUMN delivery_type TEXT NOT NULL DEFAULT 'INTERNAL'"),
+        ("reports", "third_party_provider", "ALTER TABLE reports ADD COLUMN third_party_provider TEXT"),
+        ("reports", "consignment_number",   "ALTER TABLE reports ADD COLUMN consignment_number TEXT"),
+        ("reports", "consignment_date",     "ALTER TABLE reports ADD COLUMN consignment_date TEXT"),
+        ("reports", "consignment_notes",    "ALTER TABLE reports ADD COLUMN consignment_notes TEXT"),
     ]
     for table, column, sql in migrations:
         try:

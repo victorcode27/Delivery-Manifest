@@ -391,6 +391,14 @@ def save_report(
     try:
         report_dict               = request_data.dict()
         report_dict["session_id"] = current_user["username"]
+        # 3PL / Swift consignment — INTERNAL never carries a consignment number.
+        delivery_type = (report_dict.get("deliveryType") or "INTERNAL").upper()
+        report_dict["deliveryType"] = delivery_type
+        if delivery_type == "SWIFT_3PL" and not (report_dict.get("consignmentNumber") or "").strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Swift consignment number is required for 3PL deliveries.",
+            )
         # Client-supplied manifestNumber is ignored — backend generates it
         result                    = manifest_service.save_report(report_dict)
         logger.info(
@@ -401,6 +409,8 @@ def save_report(
             "id":              result["id"],
             "manifest_number": result["manifest_number"],
         }
+    except HTTPException:
+        raise
     except ValueError as exc:
         logger.warning(f"Report save rejected: {exc}")
         raise HTTPException(status_code=422, detail=str(exc))

@@ -93,6 +93,13 @@ class Report(Base):
     session_id      = Column(Text)
     created_at      = Column(Text)
 
+    # 3PL / Swift consignment (Phase 1 — one consignment per manifest)
+    delivery_type        = Column(Text, nullable=False, default="INTERNAL")  # INTERNAL | SWIFT_3PL
+    third_party_provider = Column(Text)
+    consignment_number   = Column(Text)
+    consignment_date     = Column(Text)
+    consignment_notes    = Column(Text)
+
     items = relationship("ReportItem", back_populates="report", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:

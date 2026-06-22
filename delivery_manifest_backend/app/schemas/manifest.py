@@ -118,6 +118,12 @@ class ReportRequest(BaseModel):
     totalSku:       int             = 0
     totalWeight:    float           = 0
     invoices:       List[ReportInvoiceItem] = []
+    # 3PL / Swift consignment (Phase 1 — one consignment per manifest)
+    deliveryType:       Optional[str] = "INTERNAL"  # INTERNAL | SWIFT_3PL
+    thirdPartyProvider: Optional[str] = None
+    consignmentNumber:  Optional[str] = None
+    consignmentDate:    Optional[str] = None
+    consignmentNotes:   Optional[str] = None
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────

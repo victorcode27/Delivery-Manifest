@@ -147,6 +147,38 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- 3PL / Swift Consignment Details -->
+                <div class="form-group-section">
+                    <h3 class="form-group-heading">3PL / Swift Consignment Details</h3>
+                    <div class="grid-form">
+                        <div class="form-group">
+                            <label for="delivery-type">Delivery Type</label>
+                            <select id="delivery-type">
+                                <option value="INTERNAL">INTERNAL</option>
+                                <option value="SWIFT_3PL">SWIFT_3PL</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="swift-consignment-fields" class="grid-form hidden">
+                        <div class="form-group">
+                            <label for="third-party-provider">3PL Provider</label>
+                            <input type="text" id="third-party-provider" value="Swift">
+                        </div>
+                        <div class="form-group">
+                            <label for="consignment-number">Consignment Number</label>
+                            <input type="text" id="consignment-number" placeholder="Consignment Number">
+                        </div>
+                        <div class="form-group">
+                            <label for="consignment-date">Consignment Date</label>
+                            <input type="date" id="consignment-date">
+                        </div>
+                        <div class="form-group">
+                            <label for="consignment-notes">Consignment Notes</label>
+                            <textarea id="consignment-notes" placeholder="Optional notes"></textarea>
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <!-- Add Order Section -->
@@ -219,6 +251,7 @@
                                 <th>SKU</th>
                                 <th>Value</th>
                                 <th>Weight</th>
+                                <th>Consignment No.</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
@@ -231,6 +264,7 @@
                                 <td id="total-sku">0</td>
                                 <td id="total-value">$0.00</td>
                                 <td id="total-weight">0</td>
+                                <td></td>
                                 <td></td>
                             </tr>
                         </tfoot>
@@ -443,6 +477,28 @@
                         <div class="preview-item">
                             <span class="preview-label">Number of Invoices:</span>
                             <span class="preview-value" id="preview-invoice-count"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="preview-section hidden" id="preview-swift-section">
+                    <h3>3PL / Swift Consignment Details</h3>
+                    <div class="preview-grid">
+                        <div class="preview-item">
+                            <span class="preview-label">Provider:</span>
+                            <span class="preview-value" id="preview-third-party-provider"></span>
+                        </div>
+                        <div class="preview-item">
+                            <span class="preview-label">Consignment No.:</span>
+                            <span class="preview-value" id="preview-consignment-number"></span>
+                        </div>
+                        <div class="preview-item">
+                            <span class="preview-label">Consignment Date:</span>
+                            <span class="preview-value" id="preview-consignment-date"></span>
+                        </div>
+                        <div class="preview-item">
+                            <span class="preview-label">Notes:</span>
+                            <span class="preview-value" id="preview-consignment-notes"></span>
                         </div>
                     </div>
                 </div>
