@@ -1185,7 +1185,8 @@ def get_dispatched_invoices(
                 ri.sku, ri.value, ri.weight,
                 cr.route_name,
                 cr.delivery_mode,
-                du.status
+                du.status,
+                r.delivery_type, r.third_party_provider, r.consignment_number, r.consignment_date
             FROM reports r
             INNER JOIN report_items ri ON r.id = ri.report_id
             LEFT JOIN customer_routes cr ON ri.customer_name = cr.customer_name
@@ -1206,9 +1207,10 @@ def get_dispatched_invoices(
             where.append(
                 "(ri.invoice_number LIKE ? OR ri.order_number LIKE ? OR "
                 "r.manifest_number LIKE ? OR ri.customer_name LIKE ? OR "
-                "r.driver LIKE ? OR r.reg_number LIKE ? OR r.checker LIKE ?)"
+                "r.driver LIKE ? OR r.reg_number LIKE ? OR r.checker LIKE ? OR "
+                "r.consignment_number LIKE ?)"
             )
-            params.extend([sp] * 7)
+            params.extend([sp] * 8)
 
         if route:
             where.append("cr.route_name = ?")
@@ -1238,6 +1240,7 @@ def get_dispatched_invoices(
             "checker", "reg_number", "invoice_number", "order_number",
             "customer_name", "customer_number", "invoice_date", "area",
             "sku", "value", "weight", "route_name", "delivery_mode", "delivery_status",
+            "delivery_type", "third_party_provider", "consignment_number", "consignment_date",
         ]
         results = [dict(zip(keys, row)) for row in rows]
         return results, total

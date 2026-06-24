@@ -920,7 +920,11 @@ async function exportDispatchReport() {
         { header: 'Date Dispatched', key: 'date', width: 15 },
         { header: 'Driver', key: 'driver', width: 20 },
         { header: 'Assistant', key: 'assistant', width: 20 },
-        { header: 'Checker', key: 'checker', width: 20 }
+        { header: 'Checker', key: 'checker', width: 20 },
+        { header: 'Delivery Type', key: 'deliveryType', width: 15 },
+        { header: '3PL Provider', key: 'thirdPartyProvider', width: 15 },
+        { header: 'Consignment No.', key: 'consignmentNumber', width: 18 },
+        { header: 'Consignment Date', key: 'consignmentDate', width: 18 }
     ];
 
     // Title row
@@ -941,7 +945,7 @@ async function exportDispatchReport() {
 
     // Header row
     const headerRow = sheet.getRow(4);
-    headerRow.values = ['Invoice #', 'Order #', 'Manifest #', 'Truck Reg', 'Customer Name', 'Customer #', 'Invoice Date', 'Date Dispatched', 'Driver Name', 'Driver Assistant', 'Checker Name'];
+    headerRow.values = ['Invoice #', 'Order #', 'Manifest #', 'Truck Reg', 'Customer Name', 'Customer #', 'Invoice Date', 'Date Dispatched', 'Driver Name', 'Driver Assistant', 'Checker Name', 'Delivery Type', '3PL Provider', 'Consignment No.', 'Consignment Date'];
     headerRow.eachCell((cell) => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
         cell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
@@ -962,7 +966,11 @@ async function exportDispatchReport() {
             formatDate(row.dateDispatched),
             row.driver,
             row.assistant,
-            row.checker
+            row.checker,
+            row.deliveryType,
+            row.thirdPartyProvider,
+            row.consignmentNumber,
+            row.consignmentDate
         ]);
         dataRow.eachCell((cell) => {
             cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
@@ -1707,7 +1715,11 @@ async function renderReports() {
             dateDispatched: inv.date_dispatched || 'N/A', // CORRECT: uses dispatch timestamp
             driver: inv.driver || 'N/A',
             assistant: inv.assistant || 'N/A',
-            checker: inv.checker || 'N/A'
+            checker: inv.checker || 'N/A',
+            deliveryType: inv.delivery_type || 'INTERNAL',
+            thirdPartyProvider: inv.delivery_type === 'SWIFT_3PL' ? (inv.third_party_provider || 'Swift') : '—',
+            consignmentNumber: inv.delivery_type === 'SWIFT_3PL' ? (inv.consignment_number || '—') : '—',
+            consignmentDate: inv.delivery_type === 'SWIFT_3PL' ? (inv.consignment_date || '—') : '—'
         }));
 
         // Apply route filter if specified

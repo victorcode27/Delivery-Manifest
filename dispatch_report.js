@@ -200,7 +200,11 @@ function exportToExcel() {
         'Driver Name': invoice.driver,
         'Assistant Name': invoice.assistant,
         'Truck Reg #': invoice.reg_number,
-        'Checker Name': invoice.checker
+        'Checker Name': invoice.checker,
+        'Delivery Type': invoice.delivery_type || 'INTERNAL',
+        '3PL Provider': invoice.delivery_type === 'SWIFT_3PL' ? (invoice.third_party_provider || 'Swift') : '—',
+        'Consignment No.': invoice.delivery_type === 'SWIFT_3PL' ? (invoice.consignment_number || '—') : '—',
+        'Consignment Date': invoice.delivery_type === 'SWIFT_3PL' ? (invoice.consignment_date || '—') : '—'
     }));
 
     // Create worksheet
@@ -250,9 +254,12 @@ function exportToPDF() {
     doc.text(`Total Invoices: ${currentState.totalCount}`, 14, 27);
 
     // Table Columns
+    // Note: kept in portrait (existing design choice) — only the 2 most
+    // load-bearing Swift/3PL fields are added here to avoid an unreadable
+    // table; Excel export carries all 4 fields since it has no width limit.
     const tableColumn = [
         "Invoice", "Order", "Manifest", "Customer", "Route",
-        "Dispatched", "Driver", "Truck", "Checker"
+        "Dispatched", "Driver", "Truck", "Checker", "Delivery Type", "Consignment No."
     ];
 
     // Table Rows
@@ -265,7 +272,9 @@ function exportToPDF() {
         formatDate(invoice.date_dispatched),
         invoice.driver || '',
         invoice.reg_number || '',
-        invoice.checker || ''
+        invoice.checker || '',
+        invoice.delivery_type || 'INTERNAL',
+        invoice.delivery_type === 'SWIFT_3PL' ? (invoice.consignment_number || '—') : '—'
     ]);
 
     // Use autoTable
@@ -614,10 +623,16 @@ function renderTable(invoices) {
     invoices.forEach(invoice => {
         const row = document.createElement('tr');
         const mNum = invoice.manifest_number || '';
+        const isSwift = invoice.delivery_type === 'SWIFT_3PL';
+        const swiftBadgeHtml = isSwift
+            ? `<br><span style="font-size:0.7rem;font-weight:600;color:#92400e;">
+                   ${escapeHtml(invoice.third_party_provider || 'Swift')}: ${escapeHtml(invoice.consignment_number || '—')}
+               </span>`
+            : '';
         row.innerHTML = `
             <td>${escapeHtml(invoice.invoice_number || 'N/A')}</td>
             <td>${escapeHtml(invoice.order_number || 'N/A')}</td>
-            <td>${escapeHtml(mNum || 'N/A')}</td>
+            <td>${escapeHtml(mNum || 'N/A')}${swiftBadgeHtml}</td>
             <td>${escapeHtml(invoice.customer_name || 'N/A')}</td>
             <td>${escapeHtml(invoice.route_name || '—')}</td>
             <td>${formatDate(invoice.invoice_date)}</td>
