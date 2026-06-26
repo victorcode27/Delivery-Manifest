@@ -623,8 +623,10 @@ async function renderTable() {
     });
 
     totalSkuEl.textContent = tSku;
-    // Mixed USD/ZWL selections show one line per currency — never a blended sum.
-    totalValueEl.innerHTML = formatTotalsByCurrency(valueTotalsByCurrency, 'value');
+    // Mixed USD/ZWL selections show one VAT breakdown block per currency —
+    // never a blended sum. Display only; the saved manifest total is
+    // unaffected (this is a derived display value computed from order.value).
+    totalValueEl.innerHTML = formatVatBreakdownByCurrency(valueTotalsByCurrency, 'value');
     totalWeightEl.textContent = tWeight.toFixed(1);
     orderCountEl.textContent = `${orders.length} Invoices`;
 
@@ -1048,9 +1050,11 @@ function showPreviewModal() {
         previewOrdersList.appendChild(row);
     });
 
-    // Update totals — mixed USD/ZWL selections show one line per currency.
+    // Update totals — mixed USD/ZWL selections show one VAT breakdown block
+    // per currency. Display only; print uses this same modal DOM, so no
+    // separate print-specific calculation is needed.
     document.getElementById('preview-total-sku').textContent = tSku;
-    document.getElementById('preview-total-value').innerHTML = formatTotalsByCurrency(previewValueTotalsByCurrency, 'value');
+    document.getElementById('preview-total-value').innerHTML = formatVatBreakdownByCurrency(previewValueTotalsByCurrency, 'value');
     document.getElementById('preview-total-weight').textContent = tWeight.toFixed(1);
 
     // Show modal

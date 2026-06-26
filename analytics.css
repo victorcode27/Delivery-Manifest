@@ -269,6 +269,12 @@ body.auth-pending .app-container {
 
 .kpi-card:hover { box-shadow: var(--shadow-lg); }
 
+/* Widened card for multi-line content (e.g. per-currency VAT breakdown)
+   that doesn't fit comfortably in a standard 1-column-wide KPI card. */
+.kpi-card--wide {
+    grid-column: span 2;
+}
+
 .kpi-value {
     font-size: 1.875rem;
     font-weight: 700;
@@ -284,6 +290,24 @@ body.auth-pending .app-container {
     margin-top: 0.375rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+}
+
+/* VAT breakdown line coloring (formatVatBreakdownByCurrency) — Excl/VAT/Incl
+   lines colored differently so the breakdown is scannable at a glance. */
+.vat-line {
+    display: inline-block;
+}
+
+.vat-line--excl {
+    color: var(--primary-color);
+}
+
+.vat-line--vat {
+    color: var(--warning-color);
+}
+
+.vat-line--incl {
+    color: var(--text-primary);
 }
 
 .kpi-card.kpi-success .kpi-value { color: var(--success-color); }
@@ -474,6 +498,7 @@ td { padding: 0.75rem 0.875rem; color: var(--text-primary); }
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 1200px) {
     .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+    .kpi-card--wide { grid-column: span 3; }
 }
 
 @media (max-width: 768px) {
@@ -483,6 +508,7 @@ td { padding: 0.75rem 0.875rem; color: var(--text-primary); }
     .button-group   { flex-direction: column; width: 100%; }
     .button-group .report-btn { width: 100%; justify-content: center; }
     .kpi-grid       { grid-template-columns: repeat(2, 1fr); }
+    .kpi-card--wide { grid-column: span 2; }
     .aging-grid     { grid-template-columns: 1fr; }
     .section-header { flex-direction: column; align-items: flex-start; }
     .pagination-container  { flex-direction: column; align-items: stretch; }

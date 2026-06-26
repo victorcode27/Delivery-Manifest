@@ -118,17 +118,24 @@ function calculateVatBreakdown(totalInclVat, vatRate = VAT_RATE) {
 }
 
 /**
- * Render a per-currency VAT breakdown as display-ready text — one block of
- * three lines (Excl VAT / VAT / Incl VAT) per currency, joined with <br>.
- * Each currency's breakdown is computed independently; USD and ZWL amounts
- * are never combined.
+ * Render a per-currency VAT breakdown as display-ready HTML — one block of
+ * three lines (Total Excl VAT / VAT rate % / Total Incl VAT) per currency,
+ * joined with <br>. Each line is wrapped in a semantic span (vat-line,
+ * vat-line--excl/--vat/--incl) so consumer stylesheets can color them
+ * differently; pages with no matching CSS render the spans unstyled with
+ * no visible difference. Each currency's breakdown is computed
+ * independently; USD and ZWL amounts are never combined.
  *
  * Input follows the same {currency, value} shape produced by
  * calcValueTotalsByCurrency():
  *
  *   formatVatBreakdownByCurrency([{currency:'USD', value:1155}, {currency:'ZWL', value:2310}])
- *   -> "USD Excl VAT: 1,000.00<br>USD VAT: 155.00<br>USD Incl VAT: 1,155.00<br>
- *       ZWL Excl VAT: 2,000.00<br>ZWL VAT: 310.00<br>ZWL Incl VAT: 2,310.00"
+ *   -> '<span class="vat-line vat-line--excl">USD Total Excl VAT: 1,000.00</span><br>
+ *       <span class="vat-line vat-line--vat">USD VAT 15.5%: 155.00</span><br>
+ *       <span class="vat-line vat-line--incl">USD Total Incl VAT: 1,155.00</span><br>
+ *       <span class="vat-line vat-line--excl">ZWL Total Excl VAT: 2,000.00</span><br>
+ *       <span class="vat-line vat-line--vat">ZWL VAT 15.5%: 310.00</span><br>
+ *       <span class="vat-line vat-line--incl">ZWL Total Incl VAT: 2,310.00</span>'
  *
  * Returns '—' when the list is empty or missing.
  */
@@ -143,6 +150,12 @@ function formatVatBreakdownByCurrency(totalsByCurrency, valueKey = 'value', vatR
         const formatted = formatCurrencyValue(value, currency);
         return formatted.slice(formatted.indexOf(' ') + 1);
     };
+    const ratePct = (vatRate * 100).toFixed(1).replace(/\.0$/, '');
+    // Each line is wrapped in a semantic span so consumer stylesheets can
+    // color Excl/VAT/Incl lines differently (e.g. Analytics). The only
+    // dynamic content inside each span is the already-sanitized currency
+    // code (uppercased, defaulted to DEFAULT_CURRENCY) and an already
+    // toLocaleString()-formatted number — never raw/external text.
     return totalsByCurrency
         .map(t => {
             const cur = (t.currency && String(t.currency).trim())
@@ -150,9 +163,9 @@ function formatVatBreakdownByCurrency(totalsByCurrency, valueKey = 'value', vatR
                 : DEFAULT_CURRENCY;
             const { totalExclVat, vatAmount, totalInclVat } = calculateVatBreakdown(t[valueKey], vatRate);
             return [
-                `${cur} Excl VAT: ${formatAmount(totalExclVat, cur)}`,
-                `${cur} VAT: ${formatAmount(vatAmount, cur)}`,
-                `${cur} Incl VAT: ${formatAmount(totalInclVat, cur)}`,
+                `<span class="vat-line vat-line--excl">${cur} Total Excl VAT: ${formatAmount(totalExclVat, cur)}</span>`,
+                `<span class="vat-line vat-line--vat">${cur} VAT ${ratePct}%: ${formatAmount(vatAmount, cur)}</span>`,
+                `<span class="vat-line vat-line--incl">${cur} Total Incl VAT: ${formatAmount(totalInclVat, cur)}</span>`,
             ].join('<br>');
         })
         .join('<br>');
